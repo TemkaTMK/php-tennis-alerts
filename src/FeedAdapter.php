@@ -10,9 +10,6 @@ class FeedAdapter
         private string $apiKey
     ) {}
 
-    /**
-     * API-Tennis-ээс live match-уудыг авч, internal format руу хөрвүүлнэ.
-     */
     public function getLiveMatches(): array
     {
         if (empty($this->apiKey)) {
@@ -55,12 +52,6 @@ class FeedAdapter
         return array_map([$this, 'normalize'], $results);
     }
 
-    /**
-     * API-Tennis response-г internal format руу хөрвүүлнэ.
-     *
-     * ЧУХАЛ: API-Tennis-ийн score format нь ҮРГЭЛЖ "First Player - Second Player" дарааллаар ирнэ.
-     * Serve хэн хийснээс үл хамааран First Player-ийн оноо эхэнд, Second Player-ийнх дараа байна.
-     */
     private function normalize(array $event): array
     {
         $pointbypoint = $event['pointbypoint'] ?? [];
@@ -68,7 +59,6 @@ class FeedAdapter
         $player1 = $event['event_first_player'] ?? '';
         $player2 = $event['event_second_player'] ?? '';
 
-        // Server тодорхойлох
         $server = '';
         if ($serve === 'First Player') {
             $server = $player1;
@@ -76,22 +66,23 @@ class FeedAdapter
             $server = $player2;
         }
 
-        // Score text: sets-ийн оноо нэгтгэх
         $scoreText = $this->buildScoreText($event);
-
-        // Game index: pointbypoint массивын нийт тоо
         $gameIndex = count($pointbypoint);
+
+        // event_game_result = одоогийн game-ийн live score ("15 - 40" гэх мэт)
+        // Format: "First Player pts - Second Player pts" (ҮРГЭЛЖ)
+        $gameResult = $event['event_game_result'] ?? '';
 
         return [
             'match_id'      => (string) ($event['event_key'] ?? ''),
             'player1'       => $player1,
             'player2'       => $player2,
             'server'        => $server,
-            'serve_key'     => $serve, // "First Player" эсвэл "Second Player"
+            'serve_key'     => $serve,
+            'game_result'   => $gameResult,
             'score_text'    => $scoreText,
             'game_index'    => $gameIndex,
             'level'         => $event['event_type_type'] ?? '',
-            'surface'       => $event['tournament_name'] ?? '',
             'status'        => $event['event_status'] ?? '',
             'tournament'    => $event['tournament_name'] ?? '',
             'round'         => $event['tournament_round'] ?? '',
@@ -99,9 +90,6 @@ class FeedAdapter
         ];
     }
 
-    /**
-     * Set-үүдийн оноог нэг мөрөнд нэгтгэх.
-     */
     private function buildScoreText(array $event): string
     {
         $scores = $event['scores'] ?? [];
