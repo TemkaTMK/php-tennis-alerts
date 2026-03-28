@@ -57,61 +57,45 @@ class FeedAdapter
 
     /**
      * API-Tennis response-г internal format руу хөрвүүлнэ.
+     *
+     * ЧУХАЛ: API-Tennis-ийн score format нь ҮРГЭЛЖ "First Player - Second Player" дарааллаар ирнэ.
+     * Serve хэн хийснээс үл хамааран First Player-ийн оноо эхэнд, Second Player-ийнх дараа байна.
      */
     private function normalize(array $event): array
     {
         $pointbypoint = $event['pointbypoint'] ?? [];
-        $lastGame = !empty($pointbypoint) ? end($pointbypoint) : [];
-        $lastGamePoints = $lastGame['points'] ?? [];
-        $lastPoint = !empty($lastGamePoints) ? end($lastGamePoints) : [];
-
-        // Одоогийн game-ийн хамгийн сүүлийн point score-г parse хийх
-        // Format: "0 - 30", "15 - 15" гэх мэт
-        $serverPts = -1;
-        $returnPts = -1;
-        if (!empty($lastPoint['score'])) {
-            $parts = array_map('trim', explode('-', $lastPoint['score']));
-            if (count($parts) === 2) {
-                $serverPts = (int) $parts[0];
-                $returnPts = (int) $parts[1];
-            }
-        }
-
-        // Server тодорхойлох: event_serve = "First Player" эсвэл "Second Player"
         $serve = $event['event_serve'] ?? '';
+        $player1 = $event['event_first_player'] ?? '';
+        $player2 = $event['event_second_player'] ?? '';
+
+        // Server тодорхойлох
         $server = '';
         if ($serve === 'First Player') {
-            $server = $event['event_first_player'] ?? '';
+            $server = $player1;
         } elseif ($serve === 'Second Player') {
-            $server = $event['event_second_player'] ?? '';
+            $server = $player2;
         }
-
-        // Game index: pointbypoint массивын нийт тоо
-        $gameIndex = count($pointbypoint);
 
         // Score text: sets-ийн оноо нэгтгэх
         $scoreText = $this->buildScoreText($event);
 
+        // Game index: pointbypoint массивын нийт тоо
+        $gameIndex = count($pointbypoint);
+
         return [
-            'match_id'    => (string) ($event['event_key'] ?? ''),
-            'player1'     => $event['event_first_player'] ?? '',
-            'player2'     => $event['event_second_player'] ?? '',
-            'server'      => $server,
-            'score_text'  => $scoreText,
-            'game_index'  => $gameIndex,
-            'point_score' => [
-                'server'   => $serverPts,
-                'returner' => $returnPts,
-            ],
-            'level'       => $event['event_type_type'] ?? '',
-            'surface'     => $event['tournament_name'] ?? '',
-            'status'      => $event['event_status'] ?? '',
-            'tournament'  => $event['tournament_name'] ?? '',
-            'round'       => $event['tournament_round'] ?? '',
-            // Шинэ game эхэлсэн эсэхийг шалгах
-            'game_just_started' => $this->isGameJustStarted($lastGamePoints),
-            // Raw pointbypoint data (RuleEngine-д хэрэгтэй)
-            'pointbypoint' => $pointbypoint,
+            'match_id'      => (string) ($event['event_key'] ?? ''),
+            'player1'       => $player1,
+            'player2'       => $player2,
+            'server'        => $server,
+            'serve_key'     => $serve, // "First Player" эсвэл "Second Player"
+            'score_text'    => $scoreText,
+            'game_index'    => $gameIndex,
+            'level'         => $event['event_type_type'] ?? '',
+            'surface'       => $event['tournament_name'] ?? '',
+            'status'        => $event['event_status'] ?? '',
+            'tournament'    => $event['tournament_name'] ?? '',
+            'round'         => $event['tournament_round'] ?? '',
+            'pointbypoint'  => $pointbypoint,
         ];
     }
 
@@ -132,20 +116,11 @@ class FeedAdapter
 
         $text = implode(' ', $parts);
 
-        // Одоогийн game score нэмэх
         $gameResult = $event['event_game_result'] ?? '';
         if (!empty($gameResult)) {
             $text .= ' (' . $gameResult . ')';
         }
 
         return $text;
-    }
-
-    /**
-     * Game дөнгөж эхэлсэн эсэх (1-2 point-той).
-     */
-    private function isGameJustStarted(array $points): bool
-    {
-        return count($points) <= 2;
     }
 }

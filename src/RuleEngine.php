@@ -20,57 +20,91 @@ class RuleEngine
             return;
         }
 
-        $matchId = $match['match_id'] ?? '';
-        $player1 = $match['player1'] ?? '';
-        $player2 = $match['player2'] ?? '';
+        $matchId   = $match['match_id'] ?? '';
+        $player1   = $match['player1'] ?? '';
+        $player2   = $match['player2'] ?? '';
         $scoreText = $match['score_text'] ?? '';
 
-        // Pattern 1: Дараалсан 2+ game эхний оноогоо алдсан
-        $this->checkConsecFirstPointLost($pointbypoint, $matchId, $player1, $player2, $scoreText);
+        // Game бүрийн анализ хийх — serve хэн хийсэн, эхний оноог хэн авсан, 0-30 болсон эсэх
+        $gameAnalysis = $this->analyzeGames($pointbypoint);
 
-        // Pattern 2: Serve дээрээ 0-30 болсон (одоогийн game)
-        $this->checkServe030($match, $matchId, $player1, $player2, $scoreText);
+        // Pattern 1: Дараалсан 2+ game эхний оноогоо алдсан
+        $this->checkConsecFirstPointLost($gameAnalysis, $matchId, $player1, $player2, $scoreText);
+
+        // Pattern 2: Serve дээрээ 0-30 болсон (pointbypoint-аас шалгана — алдагдахгүй)
+        $this->checkServe030($gameAnalysis, $matchId, $player1, $player2, $scoreText);
 
         // Pattern 3: Дараалсан 2 serve game 0-30 болсон (⚠️ онцлог alert)
-        $this->checkConsecServe030($pointbypoint, $match, $matchId, $player1, $player2, $scoreText);
+        $this->checkConsecServe030($gameAnalysis, $matchId, $player1, $player2, $scoreText);
+    }
+
+    /**
+     * Pointbypoint data-г анализ хийж, game бүрийн мэдээллийг гаргах.
+     *
+     * ЧУХАЛ: API-Tennis score format нь ҮРГЭЛЖ "First Player - Second Player".
+     * Serve хийж буй тоглогчийг player_served field-ээс мэдэх бөгөөд
+     * score-г зөв тайлбарлахын тулд хэн serve хийж буйг харгалзана.
+     */
+    private function analyzeGames(array $pointbypoint): array
+    {
+        $games = [];
+
+        foreach ($pointbypoint as $i => $game) {
+            $served = $game['player_served'] ?? '';
+            $points = $game['points'] ?? [];
+
+            if (empty($served) || empty($points)) {
+                $games[] = [
+                    'index'             => $i,
+                    'served'            => $served,
+                    'server_lost_first' => false,
+                    'reached_0_30'      => false,
+                ];
+                continue;
+            }
+
+            // Эхний point шалгах — server эхний оноогоо алдсан эсэх
+            $firstPointScore = $points[0]['score'] ?? '';
+            $serverLostFirst = $this->didServerLoseFirstPoint($firstPointScore, $served);
+
+            // 0-30 шалгах — 2-р point-ийн дараа server 0, returner 30 болсон эсэх
+            $reached030 = false;
+            if (count($points) >= 2) {
+                $secondPointScore = $points[1]['score'] ?? '';
+                $reached030 = $this->isServer030($secondPointScore, $served);
+            }
+
+            $games[] = [
+                'index'             => $i,
+                'served'            => $served,
+                'server_lost_first' => $serverLostFirst,
+                'reached_0_30'      => $reached030,
+            ];
+        }
+
+        return $games;
     }
 
     /**
      * Pattern 1: CONSEC_FIRST_POINT_LOST
-     * Нэг тоглогч дараалсан 2+ game-дээ эхний оноогоо алдсан
+     * Нэг тоглогч дараалсан 2+ serve game-дээ эхний оноогоо алдсан
      */
     private function checkConsecFirstPointLost(
-        array $pointbypoint,
+        array $gameAnalysis,
         string $matchId,
         string $player1,
         string $player2,
         string $scoreText
     ): void {
-        if (count($pointbypoint) < 2) {
-            return;
-        }
-
-        // Тоглогч бүрийн дараалсан эхний оноо алдсан тоог тоолох
-        // "First Player" болон "Second Player" гэж ялгана
         $streaks = ['First Player' => 0, 'Second Player' => 0];
 
-        foreach ($pointbypoint as $game) {
-            $served = $game['player_served'] ?? '';
-            $points = $game['points'] ?? [];
-            if (empty($points) || empty($served)) {
-                // Мэдээлэл дутуу бол streak тасална
-                $streaks['First Player'] = 0;
-                $streaks['Second Player'] = 0;
+        foreach ($gameAnalysis as $game) {
+            $served = $game['served'];
+            if (empty($served)) {
                 continue;
             }
 
-            $firstPointScore = $points[0]['score'] ?? '';
-            // Serve хийж буй тоглогч эхний оноогоо алдсан эсэх
-            // Score format: "0 - 15" → server 0, returner 15 → server алдсан
-            // Score format: "15 - 0" → server 15, returner 0 → server авсан
-            $lostFirstPoint = $this->didServerLoseFirstPoint($firstPointScore);
-
-            if ($lostFirstPoint) {
+            if ($game['server_lost_first']) {
                 $streaks[$served]++;
             } else {
                 $streaks[$served] = 0;
@@ -90,7 +124,7 @@ class RuleEngine
                 $message = "🔴 PATTERN: Эхний оноо алдсан\n"
                     . "Match: {$player1} vs {$player2}\n"
                     . "Тоглогч: {$playerName}\n"
-                    . "Дараалсан {$streak} game эхний оноогоо алдлаа\n"
+                    . "Дараалсан {$streak} serve game эхний оноогоо алдлаа\n"
                     . "Score: {$scoreText}";
 
                 $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
@@ -100,44 +134,38 @@ class RuleEngine
 
     /**
      * Pattern 2: SERVE_0_30
-     * Тоглогч өөрийн serve дээрээ 0-30 болсон (одоогийн game)
+     * Тоглогч өөрийн serve дээрээ 0-30 болсон (pointbypoint-аас шалгана)
      */
     private function checkServe030(
-        array $match,
+        array $gameAnalysis,
         string $matchId,
         string $player1,
         string $player2,
         string $scoreText
     ): void {
-        $serverPts = $match['point_score']['server'] ?? -1;
-        $returnPts = $match['point_score']['returner'] ?? -1;
-        $server = $match['server'] ?? '';
+        foreach ($gameAnalysis as $game) {
+            if (!$game['reached_0_30']) {
+                continue;
+            }
 
-        // 0-30 = server 0, returner 30 гэсэн утгатай
-        // API score format: "0 - 30" → parsed int: server=0, returner=30
-        if ($serverPts !== 0 || $returnPts !== 30) {
-            return;
+            $served = $game['served'];
+            $playerName = $served === 'First Player' ? $player1 : $player2;
+            $ruleKey = 'SERVE_0_30';
+            $gameIdx = $game['index'];
+            $alertKey = "{$matchId}_{$playerName}_{$ruleKey}_g{$gameIdx}";
+
+            if ($this->isDuplicate($matchId, $playerName, $ruleKey, $alertKey)) {
+                continue;
+            }
+
+            $message = "🟡 SERVE 0-30\n"
+                . "Match: {$player1} vs {$player2}\n"
+                . "Тоглогч: {$playerName}\n"
+                . "Өөрийн serve дээрээ 0-30 болсон\n"
+                . "Score: {$scoreText}";
+
+            $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
         }
-
-        if (empty($server)) {
-            return;
-        }
-
-        $ruleKey = 'SERVE_0_30';
-        $gameIndex = $match['game_index'] ?? 0;
-        $alertKey = "{$matchId}_{$server}_{$ruleKey}_g{$gameIndex}";
-
-        if ($this->isDuplicate($matchId, $server, $ruleKey, $alertKey)) {
-            return;
-        }
-
-        $message = "🟡 SERVE 0-30\n"
-            . "Match: {$player1} vs {$player2}\n"
-            . "Тоглогч: {$server}\n"
-            . "Өөрийн serve дээрээ 0-30 болсон\n"
-            . "Score: {$scoreText}";
-
-        $this->saveAndSend($matchId, $server, $ruleKey, $message, $alertKey);
     }
 
     /**
@@ -145,39 +173,25 @@ class RuleEngine
      * Тоглогч дараалсан 2 serve game-аа 0-30-аар эхэлсэн (⚠️ ОНЦЛОГ)
      */
     private function checkConsecServe030(
-        array $pointbypoint,
-        array $match,
+        array $gameAnalysis,
         string $matchId,
         string $player1,
         string $player2,
         string $scoreText
     ): void {
-        if (count($pointbypoint) < 3) {
-            return;
-        }
-
-        // Тоглогч бүрийн serve game дээрх 0-30 streak тоолох
         $streaks = ['First Player' => 0, 'Second Player' => 0];
 
-        foreach ($pointbypoint as $game) {
-            $served = $game['player_served'] ?? '';
-            $points = $game['points'] ?? [];
-
+        foreach ($gameAnalysis as $game) {
+            $served = $game['served'];
             if (empty($served)) {
                 continue;
             }
 
-            // Зөвхөн serve хийсэн game-ийг шалгана
-            if (count($points) >= 2) {
-                $secondPointScore = $points[1]['score'] ?? '';
-                // 2-р point-ийн дараа 0-30 болсон эсэх
-                if ($this->isScore030($secondPointScore)) {
-                    $streaks[$served]++;
-                } else {
-                    $streaks[$served] = 0;
-                }
+            if ($game['reached_0_30']) {
+                $streaks[$served]++;
+            } else {
+                $streaks[$served] = 0;
             }
-            // Бусад тоглогчийн serve game-д streak хадгалагдана (тасрахгүй)
         }
 
         foreach ($streaks as $playerKey => $streak) {
@@ -208,28 +222,56 @@ class RuleEngine
 
     /**
      * Server эхний оноогоо алдсан эсэх.
-     * Score format: "0 - 15" → server алдсан, "15 - 0" → server авсан
+     *
+     * Score format: "First Player pts - Second Player pts" (ҮРГЭЛЖ)
+     * Хэрэв First Player serve хийж байвал: "0 - 15" → server 0, returner 15 → АЛДСАН
+     * Хэрэв Second Player serve хийж байвал: "15 - 0" → server(2nd) 0тэй тэнцэх нь 1st=15 → АЛДСАН
      */
-    private function didServerLoseFirstPoint(string $score): bool
+    private function didServerLoseFirstPoint(string $score, string $served): bool
     {
         $parts = array_map('trim', explode('-', $score));
         if (count($parts) !== 2) {
             return false;
         }
-        return (int) $parts[0] === 0 && (int) $parts[1] === 15;
+
+        $firstPlayerPts  = (int) $parts[0];
+        $secondPlayerPts = (int) $parts[1];
+
+        if ($served === 'First Player') {
+            // First Player serve хийж байна → First Player 0, Second Player 15 = алдсан
+            return $firstPlayerPts === 0 && $secondPlayerPts === 15;
+        } elseif ($served === 'Second Player') {
+            // Second Player serve хийж байна → First Player 15, Second Player 0 = алдсан
+            return $firstPlayerPts === 15 && $secondPlayerPts === 0;
+        }
+
+        return false;
     }
 
     /**
-     * Score 0-30 эсэх шалгах.
-     * Score format: "0 - 30"
+     * Server 0-30 болсон эсэх (2-р point-ийн дараа).
+     *
+     * Score format: "First Player pts - Second Player pts" (ҮРГЭЛЖ)
      */
-    private function isScore030(string $score): bool
+    private function isServer030(string $score, string $served): bool
     {
         $parts = array_map('trim', explode('-', $score));
         if (count($parts) !== 2) {
             return false;
         }
-        return (int) $parts[0] === 0 && (int) $parts[1] === 30;
+
+        $firstPlayerPts  = (int) $parts[0];
+        $secondPlayerPts = (int) $parts[1];
+
+        if ($served === 'First Player') {
+            // First Player serve → server 0-30 = First:0, Second:30
+            return $firstPlayerPts === 0 && $secondPlayerPts === 30;
+        } elseif ($served === 'Second Player') {
+            // Second Player serve → server 0-30 = First:30, Second:0
+            return $firstPlayerPts === 30 && $secondPlayerPts === 0;
+        }
+
+        return false;
     }
 
     /**
