@@ -31,11 +31,14 @@ class RuleEngine
         $gameIndex    = $match['game_index'] ?? 0;
 
         // Pattern 2: Serve дээрээ эхний 2 оноогоо алдсан
-        // event_game_result-аас ШУУД шалгана — хоцрохгүй
+        // Арга 1: event_game_result-аас ШУУД шалгана (real-time)
         $this->checkServe030Live($gameResult, $serveKey, $server, $matchId, $player1, $player2, $scoreText, $gameIndex);
 
         if (!empty($pointbypoint)) {
             $gameAnalysis = $this->analyzeGames($pointbypoint);
+
+            // Pattern 2 Арга 2: pointbypoint-аас шалгана (game дууссаны дараа ч барьдаг)
+            $this->checkServe030FromHistory($gameAnalysis, $matchId, $player1, $player2, $scoreText);
 
             // Pattern 1: Дараалсан 2+ game эхний оноогоо алдсан
             $this->checkConsecFirstPointLost($gameAnalysis, $matchId, $player1, $player2, $scoreText);
@@ -173,6 +176,44 @@ class RuleEngine
         }
 
         return $games;
+    }
+
+    /**
+     * Pattern 2 (backup): pointbypoint түүхээс SERVE_0_30 шалгах
+     *
+     * Live game_result-аар 12 секундийн poll завсарт алдагдсан тохиолдолд
+     * pointbypoint data-аас game бүрт server 0-30 болсон эсэхийг шалгана.
+     */
+    private function checkServe030FromHistory(
+        array $gameAnalysis,
+        string $matchId,
+        string $player1,
+        string $player2,
+        string $scoreText
+    ): void {
+        foreach ($gameAnalysis as $game) {
+            $served = $game['served'];
+            if (empty($served) || !$game['reached_0_30']) {
+                continue;
+            }
+
+            $playerName = ($served === 'First Player') ? $player1 : $player2;
+            $ruleKey = 'SERVE_0_30';
+            $gameIdx = $game['index'];
+            $alertKey = "{$matchId}_{$playerName}_{$ruleKey}_g{$gameIdx}";
+
+            if ($this->isDuplicate($matchId, $playerName, $ruleKey, $alertKey)) {
+                continue;
+            }
+
+            $message = "🟡 SERVE 0-30\n"
+                . "Match: {$player1} vs {$player2}\n"
+                . "Тоглогч: {$playerName}\n"
+                . "Serve дээрээ эхний 2 оноогоо алдлаа (game #{$gameIdx})\n"
+                . "Score: {$scoreText}";
+
+            $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
+        }
     }
 
     /**
