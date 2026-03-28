@@ -13,7 +13,7 @@ include dirname(__DIR__) . '/src/templates/header.php';
 
   <div class="card">
     <h1><?= htmlspecialchars($_ENV['APP_NAME'] ?? 'Tennis Pattern Alerts') ?></h1>
-    <p class="small">Live match dashboard</p>
+    <p class="small">Live match dashboard — <?= count($matches) ?> match(es) live</p>
   </div>
 
   <?php if (empty($matches)): ?>
@@ -31,13 +31,20 @@ include dirname(__DIR__) . '/src/templates/header.php';
       </div>
 
       <div class="small" style="margin-top:8px;">
-        Level: <?= htmlspecialchars($m['level'] ?? '-') ?> |
-        Surface: <?= htmlspecialchars($m['surface'] ?? '-') ?> |
-        Score: <?= htmlspecialchars($m['score_text'] ?? '-') ?>
+        <?= htmlspecialchars($m['tournament'] ?? '-') ?> |
+        <?= htmlspecialchars($m['round'] ?? '-') ?> |
+        <?= htmlspecialchars($m['level'] ?? '-') ?>
+      </div>
+
+      <div style="margin-top:8px;">
+        Score: <strong><?= htmlspecialchars($m['score_text'] ?? '-') ?></strong>
+        — <?= htmlspecialchars($m['status'] ?? '-') ?>
       </div>
 
       <div style="margin-top:10px;">
-        <span class="badge">Server: <?= htmlspecialchars($m['server'] ?? '-') ?></span>
+        <?php if (!empty($m['server'])): ?>
+          <span class="badge">Serving: <?= htmlspecialchars($m['server']) ?></span>
+        <?php endif; ?>
       </div>
     </div>
   <?php endforeach; ?>
