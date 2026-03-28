@@ -57,15 +57,35 @@ function db(): PDO
         $pdo->exec("CREATE INDEX IF NOT EXISTS idx_alerts_match_player
             ON alerts(match_id, player_name, rule_key)");
 
-        // Seed default rule
-        $check = $pdo->query("SELECT COUNT(*) FROM rules WHERE key_name='CONSEC_SERVICE_START_0_30'")
-            ->fetchColumn();
+        // Seed rules
+        $rules = [
+            [
+                'name' => 'Дараалсан 2+ game эхний оноо алдсан',
+                'key_name' => 'CONSEC_FIRST_POINT_LOST',
+                'config' => json_encode(['consecutive' => 2]),
+            ],
+            [
+                'name' => 'Serve дээрээ 0-30 болсон',
+                'key_name' => 'SERVE_0_30',
+                'config' => json_encode([]),
+            ],
+            [
+                'name' => 'Дараалсан 2 serve game 0-30 (⚠️ ОНЦЛОГ)',
+                'key_name' => 'CONSEC_SERVE_0_30',
+                'config' => json_encode(['consecutive' => 2]),
+            ],
+        ];
 
-        if ((int)$check === 0) {
-            $config = json_encode(['consecutive' => 2]);
-            $stmt = $pdo->prepare("INSERT INTO rules(name, key_name, enabled, config_json, created_at)
-                VALUES('2 consecutive service games start 0-30', 'CONSEC_SERVICE_START_0_30', 1, :config, :time)");
-            $stmt->execute([':config' => $config, ':time' => date('c')]);
+        $stmt = $pdo->prepare("INSERT OR IGNORE INTO rules(name, key_name, enabled, config_json, created_at)
+            VALUES(:name, :key, 1, :config, :time)");
+
+        foreach ($rules as $rule) {
+            $stmt->execute([
+                ':name'   => $rule['name'],
+                ':key'    => $rule['key_name'],
+                ':config' => $rule['config'],
+                ':time'   => date('c'),
+            ]);
         }
 
         $initialized = true;
