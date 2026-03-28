@@ -11,7 +11,7 @@ require_once __DIR__ . '/src/helpers.php';
 
 date_default_timezone_set($_ENV['APP_TIMEZONE'] ?? 'Asia/Ulaanbaatar');
 
-$interval = (int) ($_ENV['POLL_INTERVAL'] ?? 10);
+$interval = (int) ($_ENV['POLL_INTERVAL'] ?? 12);
 
 echo "[Worker] Starting polling every {$interval} seconds..." . PHP_EOL;
 
