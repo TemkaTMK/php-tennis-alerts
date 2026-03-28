@@ -30,11 +30,10 @@ class RuleEngine
         $gameResult   = $match['game_result'] ?? '';
         $gameIndex    = $match['game_index'] ?? 0;
 
-        // Pattern 2: Serve дээрээ эхний 2 оноогоо алдсан (0-30)
+        // Pattern 2: Serve дээрээ эхний 2 оноогоо алдсан
         // event_game_result-аас ШУУД шалгана — хоцрохгүй
         $this->checkServe030Live($gameResult, $serveKey, $server, $matchId, $player1, $player2, $scoreText, $gameIndex);
 
-        // Pattern 1 & 3: pointbypoint түүхээс шалгана
         if (!empty($pointbypoint)) {
             $gameAnalysis = $this->analyzeGames($pointbypoint);
 
@@ -48,10 +47,13 @@ class RuleEngine
 
     /**
      * Pattern 2: SERVE_0_30 — LIVE шалгалт
-     * event_game_result-аас шууд шалгана (real-time, хоцрохгүй)
+     *
+     * Server эхний 2 оноогоо алдсан эсэхийг шалгана.
+     * 12 секундийн завсарт score өөрчлөгдөж болох тул
+     * 0-30, 0-40, 15-40 зэрэг server-ийн эхний 2 оноо алдагдсан
+     * бүх тохиолдлыг шалгана.
      *
      * game_result format: "First Player pts - Second Player pts" ҮРГЭЛЖ
-     * Server 0-30 гэдэг нь serve хийж буй тоглогчийн оноо 0, нөгөөгийнх 30
      */
     private function checkServe030Live(
         string $gameResult,
@@ -72,20 +74,27 @@ class RuleEngine
             return;
         }
 
-        $firstPts  = (int) $parts[0];
-        $secondPts = (int) $parts[1];
+        // Тоон утга руу хөрвүүлэх (A, AD гэх мэтийг тооцохгүй)
+        $firstPts  = $this->parsePoints($parts[0]);
+        $secondPts = $this->parsePoints($parts[1]);
 
-        // Server 0-30 эсэх шалгах
-        $isServe030 = false;
-        if ($serveKey === 'First Player') {
-            // First Player serve → server 0, returner 30 = first:0, second:30
-            $isServe030 = ($firstPts === 0 && $secondPts === 30);
-        } elseif ($serveKey === 'Second Player') {
-            // Second Player serve → server 0, returner 30 = first:30, second:0
-            $isServe030 = ($firstPts === 30 && $secondPts === 0);
+        if ($firstPts === -1 || $secondPts === -1) {
+            return;
         }
 
-        if (!$isServe030) {
+        // Server-ийн оноо, returner-ийн оноог тодорхойлох
+        $serverPts   = ($serveKey === 'First Player') ? $firstPts : $secondPts;
+        $returnerPts = ($serveKey === 'First Player') ? $secondPts : $firstPts;
+
+        // Server эхний 2 оноогоо алдсан эсэх:
+        // Server-ийн оноо 0 эсвэл 15, Returner-ийн оноо 30+
+        // Жишээ: 0-30, 0-40, 15-40
+        $serverLostFirst2 = ($serverPts <= 15 && $returnerPts >= 30 && $returnerPts > $serverPts);
+
+        // Debug log
+        echo "  [SERVE030] {$server}: gameResult={$gameResult} serveKey={$serveKey} serverPts={$serverPts} returnerPts={$returnerPts} lost2=" . ($serverLostFirst2 ? 'YES' : 'no') . PHP_EOL;
+
+        if (!$serverLostFirst2) {
             return;
         }
 
@@ -99,10 +108,26 @@ class RuleEngine
         $message = "🟡 SERVE 0-30\n"
             . "Match: {$player1} vs {$player2}\n"
             . "Тоглогч: {$server}\n"
-            . "Serve дээрээ эхний 2 оноогоо алдлаа\n"
+            . "Serve дээрээ эхний 2 оноогоо алдлаа ({$gameResult})\n"
             . "Score: {$scoreText}";
 
         $this->saveAndSend($matchId, $server, $ruleKey, $message, $alertKey);
+    }
+
+    /**
+     * Point string-г тоо руу хөрвүүлэх.
+     * "0" → 0, "15" → 15, "30" → 30, "40" → 40, "A" → 45, бусад → -1
+     */
+    private function parsePoints(string $pts): int
+    {
+        $pts = trim($pts);
+        if ($pts === 'A' || $pts === 'AD') {
+            return 45;
+        }
+        if (is_numeric($pts)) {
+            return (int) $pts;
+        }
+        return -1;
     }
 
     /**
