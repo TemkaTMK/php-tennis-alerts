@@ -82,14 +82,18 @@ class RuleEngine
             return;
         }
 
+        // Deuce/AD бол шалгахгүй (45 = Advantage)
+        if ($firstPts >= 40 && $secondPts >= 40) {
+            return;
+        }
+
         // Server-ийн оноо, returner-ийн оноог тодорхойлох
         $serverPts   = ($serveKey === 'First Player') ? $firstPts : $secondPts;
         $returnerPts = ($serveKey === 'First Player') ? $secondPts : $firstPts;
 
         // Server эхний 2 оноогоо алдсан эсэх:
-        // Server-ийн оноо 0 эсвэл 15, Returner-ийн оноо 30+
-        // Жишээ: 0-30, 0-40, 15-40
-        $serverLostFirst2 = ($serverPts <= 15 && $returnerPts >= 30 && $returnerPts > $serverPts);
+        // Server оноо = 0, Returner оноо >= 30 (0-30 эсвэл 0-40)
+        $serverLostFirst2 = ($serverPts === 0 && $returnerPts >= 30);
 
         // Debug log
         echo "  [SERVE030] {$server}: gameResult={$gameResult} serveKey={$serveKey} serverPts={$serverPts} returnerPts={$returnerPts} lost2=" . ($serverLostFirst2 ? 'YES' : 'no') . PHP_EOL;
