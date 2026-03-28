@@ -1,58 +1,72 @@
 <?php
 
 declare(strict_types=1);
+
 require_once dirname(__DIR__) . '/src/bootstrap.php';
+
+session_start();
 
 $pdo = db();
 
+// CSRF token generate
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+$csrfToken = $_SESSION['csrf_token'];
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // CSRF шалгалт
+    $submittedToken = $_POST['csrf_token'] ?? '';
+    if (!hash_equals($csrfToken, $submittedToken)) {
+        http_response_code(403);
+        exit('Invalid CSRF token');
+    }
+
     $id = (int)($_POST['id'] ?? 0);
     $enabled = isset($_POST['enabled']) ? 1 : 0;
     $consecutive = max(1, (int)($_POST['consecutive'] ?? 2));
 
     $config = json_encode([
-        'consecutive' => $consecutive
+        'consecutive' => $consecutive,
     ], JSON_UNESCAPED_UNICODE);
 
-    $stmt = $pdo->prepare("
-        UPDATE rules
-        SET enabled = :enabled,
-            config_json = :config
-        WHERE id = :id
-    ");
-
-    $stmt->execute([
-        ':enabled' => $enabled,
-        ':config' => $config,
-        ':id' => $id
-    ]);
+    try {
+        $stmt = $pdo->prepare("
+            UPDATE rules
+            SET enabled = :enabled,
+                config_json = :config
+            WHERE id = :id
+        ");
+        $stmt->execute([
+            ':enabled' => $enabled,
+            ':config' => $config,
+            ':id' => $id,
+        ]);
+    } catch (PDOException $e) {
+        error_log('rules.php: update failed: ' . $e->getMessage());
+    }
 
     header('Location: rules.php');
     exit;
 }
 
-$rules = $pdo->query("SELECT * FROM rules ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+try {
+    $rules = $pdo->query("SELECT * FROM rules ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('rules.php: ' . $e->getMessage());
+    $rules = [];
+}
+
+$pageTitle = 'Rules — ' . ($_ENV['APP_NAME'] ?? 'Tennis Pattern Alerts');
+include dirname(__DIR__) . '/src/templates/header.php';
 ?>
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Rules</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-<div class="container">
-  <div class="nav">
-    <a href="index.php">Live Matches</a>
-    <a href="rules.php">Rules</a>
-    <a href="logs.php">Alert Logs</a>
-  </div>
 
   <?php foreach ($rules as $rule):
     $cfg = json_decode((string)$rule['config_json'], true) ?: [];
   ?>
     <div class="card">
       <form method="post">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
         <input type="hidden" name="id" value="<?= (int)$rule['id'] ?>">
 
         <h2><?= htmlspecialchars($rule['name']) ?></h2>
@@ -73,6 +87,5 @@ $rules = $pdo->query("SELECT * FROM rules ORDER BY id ASC")->fetchAll(PDO::FETCH
       </form>
     </div>
   <?php endforeach; ?>
-</div>
-</body>
-</html>
+
+<?php include dirname(__DIR__) . '/src/templates/footer.php'; ?>

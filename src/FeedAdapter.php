@@ -2,17 +2,22 @@
 
 declare(strict_types=1);
 
+namespace App;
+
 class FeedAdapter
 {
-    public static function getLiveMatches(): array
-    {
-        $apiKey = getenv('TENNIS_API_KEY');
+    public function __construct(
+        private string $apiKey
+    ) {}
 
-        if (!$apiKey) {
+    public function getLiveMatches(): array
+    {
+        if (empty($this->apiKey)) {
+            error_log('FeedAdapter: TENNIS_API_KEY is missing');
             return [];
         }
 
-        $url = 'https://api.api-tennis.com/tennis/?method=get_livescore&APIkey=' . urlencode($apiKey);
+        $url = 'https://api.api-tennis.com/tennis/?method=get_livescore&APIkey=' . urlencode($this->apiKey);
 
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -35,6 +40,7 @@ class FeedAdapter
         $data = json_decode($response, true);
 
         if (!is_array($data)) {
+            error_log('FeedAdapter: invalid JSON response');
             return [];
         }
 

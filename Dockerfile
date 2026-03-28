@@ -1,10 +1,17 @@
+FROM composer:2 AS deps
+WORKDIR /app
+COPY composer.json ./
+RUN composer install --no-dev --optimize-autoloader --no-interaction
+
 FROM php:8.2-cli
 
 WORKDIR /app
 
+COPY --from=deps /app/vendor /app/vendor
 COPY . /app
 
-RUN mkdir -p /app/storage && chmod -R 777 /app/storage
+RUN mkdir -p /app/storage /app/storage/rate_limit \
+    && chmod -R 775 /app/storage
 
 EXPOSE 8080
 

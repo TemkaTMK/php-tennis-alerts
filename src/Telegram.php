@@ -2,41 +2,56 @@
 
 declare(strict_types=1);
 
+namespace App;
+
 class Telegram
 {
-    public static function send($text)
-    {
-        $token = getenv('TELEGRAM_BOT_TOKEN');
-        $chatId = getenv('TELEGRAM_CHAT_ID');
+    public function __construct(
+        private string $token,
+        private string $chatId
+    ) {}
 
-        if (!$token || !$chatId) {
-            return 'ENV_MISSING';
+    public function send(string $text): bool
+    {
+        if (empty($this->token) || empty($this->chatId)) {
+            error_log('Telegram: token or chat_id is missing');
+            return false;
         }
 
-        $url = "https://api.telegram.org/bot" . $token . "/sendMessage";
+        $url = "https://api.telegram.org/bot{$this->token}/sendMessage";
 
         $postFields = [
-            'chat_id' => $chatId,
-            'text' => $text
+            'chat_id' => $this->chatId,
+            'text' => $text,
         ];
 
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($postFields));
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 20);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => http_build_query($postFields),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 20,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
 
         $result = curl_exec($ch);
 
         if ($result === false) {
             $err = curl_error($ch);
             curl_close($ch);
-            return 'CURL_ERROR: ' . $err;
+            error_log('Telegram CURL error: ' . $err);
+            return false;
         }
 
         curl_close($ch);
-        return $result;
+
+        $decoded = json_decode($result, true);
+        if (!isset($decoded['ok']) || $decoded['ok'] !== true) {
+            error_log('Telegram API error: ' . $result);
+            return false;
+        }
+
+        return true;
     }
 }

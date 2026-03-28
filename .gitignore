@@ -1,0 +1,7 @@
+.env
+/storage/
+/vendor/
+*.db
+.idea/
+.vscode/
+composer.phar

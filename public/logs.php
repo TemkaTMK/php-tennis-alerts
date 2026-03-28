@@ -1,49 +1,57 @@
 <?php
 
 declare(strict_types=1);
+
 require_once dirname(__DIR__) . '/src/bootstrap.php';
 
-$matches = FeedAdapter::getLiveMatches();
+$pdo = db();
+
+try {
+    $alerts = $pdo->query("SELECT * FROM alerts ORDER BY created_at DESC LIMIT 100")
+        ->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    error_log('logs.php: ' . $e->getMessage());
+    $alerts = [];
+}
+
+$pageTitle = 'Alert Logs — ' . ($_ENV['APP_NAME'] ?? 'Tennis Pattern Alerts');
+include dirname(__DIR__) . '/src/templates/header.php';
 ?>
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title><?= htmlspecialchars(getenv('APP_NAME') ?: 'Tennis Pattern Alerts') ?></title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-<div class="container">
-  <div class="nav">
-    <a href="index.php">Live Matches</a>
-    <a href="rules.php">Rules</a>
-    <a href="logs.php">Alert Logs</a>
-  </div>
 
   <div class="card">
-    <h1><?= htmlspecialchars(getenv('APP_NAME') ?: 'Tennis Pattern Alerts') ?></h1>
-    <p class="small">Live match dashboard</p>
+    <h1>Alert Logs</h1>
+    <p class="small">Recent pattern alerts sent via Telegram</p>
   </div>
 
-  <?php foreach ($matches as $m): ?>
+  <?php if (empty($alerts)): ?>
     <div class="card">
-      <div>
-        <strong><?= htmlspecialchars($m['player1'] ?? '') ?></strong>
-        vs
-        <strong><?= htmlspecialchars($m['player2'] ?? '') ?></strong>
-      </div>
-
-      <div class="small" style="margin-top:8px;">
-        Level: <?= htmlspecialchars($m['level'] ?? '-') ?> |
-        Surface: <?= htmlspecialchars($m['surface'] ?? '-') ?> |
-        Score: <?= htmlspecialchars($m['score_text'] ?? '-') ?>
-      </div>
-
-      <div style="margin-top:10px;">
-        <span class="badge">Server: <?= htmlspecialchars($m['server'] ?? '-') ?></span>
-      </div>
+      <p class="small">No alerts yet.</p>
     </div>
-  <?php endforeach; ?>
-</div>
-</body>
-</html>
+  <?php else: ?>
+    <div class="card" style="overflow-x:auto;">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Match ID</th>
+            <th>Player</th>
+            <th>Rule</th>
+            <th>Score</th>
+          </tr>
+        </thead>
+        <tbody>
+          <?php foreach ($alerts as $alert): ?>
+            <tr>
+              <td class="small"><?= htmlspecialchars($alert['created_at'] ?? '') ?></td>
+              <td class="small"><?= htmlspecialchars($alert['match_id'] ?? '') ?></td>
+              <td><?= htmlspecialchars($alert['player_name'] ?? '') ?></td>
+              <td><span class="badge"><?= htmlspecialchars($alert['rule_key'] ?? '') ?></span></td>
+              <td><?= htmlspecialchars($alert['score_text'] ?? '') ?></td>
+            </tr>
+          <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  <?php endif; ?>
+
+<?php include dirname(__DIR__) . '/src/templates/footer.php'; ?>
