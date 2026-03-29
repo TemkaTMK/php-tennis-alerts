@@ -34,6 +34,10 @@ class RuleEngine
         // Арга 1: event_game_result-аас ШУУД шалгана (real-time)
         $this->checkServe030Live($gameResult, $serveKey, $server, $matchId, $player1, $player2, $scoreText, $gameIndex);
 
+        // Арга 3: Өмнөх game-ийн score-г санаж шалгах (pointbypoint байхгүй үед)
+        $gameScore = $match['score_text'] ?? '';
+        $this->checkServe030ByStateChange($matchId, $serveKey, $server, $gameResult, $gameScore, $player1, $player2, $scoreText, $gameIndex);
+
         if (!empty($pointbypoint)) {
             $gameAnalysis = $this->analyzeGames($pointbypoint);
 
@@ -176,6 +180,124 @@ class RuleEngine
         }
 
         return $games;
+    }
+
+    /**
+     * Pattern 2 (Арга 3): Game state change detect
+     *
+     * Poll бүрт game_result + game_score хадгална.
+     * Game шилжихэд (өмнөх score != одоогийн score) өмнөх game-ийн
+     * score-г шалгаж server 0-30+ байсан бол alert гаргана.
+     * pointbypoint байхгүй тоглолтуудад ч ажиллана.
+     */
+    private function checkServe030ByStateChange(
+        string $matchId,
+        string $serveKey,
+        string $server,
+        string $gameResult,
+        string $gameScore,
+        string $player1,
+        string $player2,
+        string $scoreText,
+        int $gameIndex
+    ): void {
+        if (empty($matchId) || empty($gameResult) || empty($serveKey)) {
+            return;
+        }
+
+        // Одоогийн server/returner оноо тооцоолох
+        $parts = array_map('trim', explode('-', $gameResult));
+        $curServerPts = 99;
+        $curReturnerPts = 0;
+        if (count($parts) === 2) {
+            $fp = $this->parsePoints($parts[0]);
+            $sp = $this->parsePoints($parts[1]);
+            if ($fp !== -1 && $sp !== -1) {
+                $curServerPts   = ($serveKey === 'First Player') ? $fp : $sp;
+                $curReturnerPts = ($serveKey === 'First Player') ? $sp : $fp;
+            }
+        }
+
+        try {
+            // Өмнөх state авах
+            $stmt = $this->pdo->prepare("
+                SELECT serve_key, game_result, game_score, min_server_pts, max_returner_pts
+                FROM match_game_state WHERE match_id = :id
+            ");
+            $stmt->execute([':id' => $matchId]);
+            $prev = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            $prevGameScore = $prev['game_score'] ?? '';
+            $prevServeKey  = $prev['serve_key'] ?? '';
+
+            // Game шилжсэн эсэхийг detect:
+            // Score өөрчлөгдсөн байвал шинэ game
+            $isNewGame = $prev && (
+                ($gameScore !== $prevGameScore) ||
+                ($gameResult === '0 - 0' && ($prev['game_result'] ?? '') !== '0 - 0' && !empty($prev['game_result']))
+            );
+
+            if ($isNewGame) {
+                // Өмнөх game-д server эхний 2 оноогоо алдсан эсэхийг шалгах
+                $minSrvPts = (int) ($prev['min_server_pts'] ?? 99);
+                $maxRetPts = (int) ($prev['max_returner_pts'] ?? 0);
+
+                echo "  [STATE] Game changed for match {$matchId}: minSrv={$minSrvPts} maxRet={$maxRetPts}" . PHP_EOL;
+
+                if ($minSrvPts === 0 && $maxRetPts >= 30 && !empty($prevServeKey)) {
+                    $prevServerName = ($prevServeKey === 'First Player') ? $player1 : $player2;
+                    $ruleKey = 'SERVE_0_30';
+                    $prevGameIdx = max(0, $gameIndex - 1);
+                    $alertKey = "{$matchId}_{$prevServerName}_{$ruleKey}_g{$prevGameIdx}";
+
+                    if (!$this->isDuplicate($matchId, $prevServerName, $ruleKey, $alertKey)) {
+                        $message = "🟡 SERVE 0-30\n"
+                            . "Match: {$player1} vs {$player2}\n"
+                            . "Тоглогч: {$prevServerName}\n"
+                            . "Serve дээрээ эхний 2 оноогоо алдлаа\n"
+                            . "Score: {$scoreText}";
+
+                        echo "  [STATE] → Alert fired for {$prevServerName}!" . PHP_EOL;
+                        $this->saveAndSend($matchId, $prevServerName, $ruleKey, $message, $alertKey);
+                    }
+                }
+
+                // Шинэ game — min/max reset
+                $upsert = $this->pdo->prepare("
+                    INSERT INTO match_game_state (match_id, serve_key, game_result, game_score, min_server_pts, max_returner_pts, updated_at)
+                    VALUES (:id, :sk, :gr, :gs, :minS, :maxR, :t)
+                    ON CONFLICT(match_id) DO UPDATE SET
+                        serve_key = :sk, game_result = :gr, game_score = :gs,
+                        min_server_pts = :minS, max_returner_pts = :maxR, updated_at = :t
+                ");
+                $upsert->execute([
+                    ':id' => $matchId, ':sk' => $serveKey, ':gr' => $gameResult,
+                    ':gs' => $gameScore, ':minS' => $curServerPts, ':maxR' => $curReturnerPts,
+                    ':t' => date('c'),
+                ]);
+            } else {
+                // Ижил game үргэлжилж байна — min/max update
+                $prevMin = $prev ? (int)($prev['min_server_pts'] ?? 99) : 99;
+                $prevMax = $prev ? (int)($prev['max_returner_pts'] ?? 0) : 0;
+                $newMin = min($prevMin, $curServerPts);
+                $newMax = max($prevMax, $curReturnerPts);
+
+                $upsert = $this->pdo->prepare("
+                    INSERT INTO match_game_state (match_id, serve_key, game_result, game_score, min_server_pts, max_returner_pts, updated_at)
+                    VALUES (:id, :sk, :gr, :gs, :minS, :maxR, :t)
+                    ON CONFLICT(match_id) DO UPDATE SET
+                        serve_key = :sk, game_result = :gr, game_score = :gs,
+                        min_server_pts = :minS, max_returner_pts = :maxR, updated_at = :t
+                ");
+                $upsert->execute([
+                    ':id' => $matchId, ':sk' => $serveKey, ':gr' => $gameResult,
+                    ':gs' => $gameScore, ':minS' => $newMin, ':maxR' => $newMax,
+                    ':t' => date('c'),
+                ]);
+            }
+        } catch (\PDOException $e) {
+            error_log('RuleEngine state check error: ' . $e->getMessage());
+        }
     }
 
     /**

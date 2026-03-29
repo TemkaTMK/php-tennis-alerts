@@ -57,6 +57,17 @@ function db(): PDO
         $pdo->exec("CREATE INDEX IF NOT EXISTS idx_alerts_match_player
             ON alerts(match_id, player_name, rule_key)");
 
+        // Тоглолт бүрийн game score-г хадгалах (pointbypoint байхгүй үед ашиглана)
+        $pdo->exec("CREATE TABLE IF NOT EXISTS match_game_state (
+            match_id TEXT PRIMARY KEY,
+            serve_key TEXT,
+            game_result TEXT,
+            game_score TEXT,
+            min_server_pts INTEGER DEFAULT 99,
+            max_returner_pts INTEGER DEFAULT 0,
+            updated_at TEXT
+        )");
+
         // Seed rules
         $rules = [
             [
