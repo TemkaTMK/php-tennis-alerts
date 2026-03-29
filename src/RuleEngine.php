@@ -30,26 +30,90 @@ class RuleEngine
         $gameResult   = $match['game_result'] ?? '';
         $gameIndex    = $match['game_index'] ?? 0;
 
+        // Тэмцээн + odds мэдээлэл
+        $tournament  = $match['tournament'] ?? '';
+        $p1Odds      = $match['player1_odds'] ?? null;
+        $p2Odds      = $match['player2_odds'] ?? null;
+
+        // Тоглогч бүрийн odds тэмдэг тооцоолох
+        $p1Tag = $this->buildOddsTag($p1Odds, $p2Odds);
+        $p2Tag = $this->buildOddsTag($p2Odds, $p1Odds);
+
+        // Match context — бүх pattern-д дамжуулна
+        $ctx = [
+            'tournament' => $tournament,
+            'player1'    => $player1,
+            'player2'    => $player2,
+            'p1Tag'      => $p1Tag,
+            'p2Tag'      => $p2Tag,
+            'p1Odds'     => $p1Odds,
+            'p2Odds'     => $p2Odds,
+            'scoreText'  => $scoreText,
+        ];
+
         // Pattern 2: Serve дээрээ эхний 2 оноогоо алдсан
         // Арга 1: event_game_result-аас ШУУД шалгана (real-time)
-        $this->checkServe030Live($gameResult, $serveKey, $server, $matchId, $player1, $player2, $scoreText, $gameIndex);
+        $this->checkServe030Live($gameResult, $serveKey, $server, $matchId, $ctx, $gameIndex);
 
         // Арга 2: Өмнөх game-ийн score-г санаж шалгах (pointbypoint байхгүй үед)
         $gameScore = $match['score_text'] ?? '';
-        $this->checkServe030ByStateChange($matchId, $serveKey, $server, $gameResult, $gameScore, $player1, $player2, $scoreText, $gameIndex);
+        $this->checkServe030ByStateChange($matchId, $serveKey, $server, $gameResult, $gameScore, $ctx, $gameIndex);
 
         if (!empty($pointbypoint)) {
             $gameAnalysis = $this->analyzeGames($pointbypoint);
 
             // Pattern 2 Арга 3: pointbypoint-аас шалгана (game дууссаны дараа ч барьдаг)
-            $this->checkServe030FromHistory($gameAnalysis, $matchId, $player1, $player2, $scoreText);
+            $this->checkServe030FromHistory($gameAnalysis, $matchId, $ctx);
 
             // Pattern 1: Дараалсан 2+ game эхний оноогоо алдсан
-            $this->checkConsecFirstPointLost($gameAnalysis, $matchId, $player1, $player2, $scoreText);
+            $this->checkConsecFirstPointLost($gameAnalysis, $matchId, $ctx);
         }
 
         // Pattern 3: Дараалсан 2 serve game эхний 2 оноогоо алдсан (DB-ээс шалгана)
-        $this->checkConsecServe030Live($matchId, $server, $player1, $player2, $scoreText);
+        $this->checkConsecServe030Live($matchId, $server, $ctx);
+    }
+
+    /**
+     * Тоглогчийн odds-р overrated/underrated тэмдэг тодорхойлох.
+     * Бага odds = фаворит (📈), их odds = андердог (📉).
+     */
+    private function buildOddsTag(?float $myOdds, ?float $opponentOdds): string
+    {
+        if ($myOdds === null || $opponentOdds === null) {
+            return '';
+        }
+        if ($myOdds < $opponentOdds) {
+            return '📈';
+        }
+        if ($myOdds > $opponentOdds) {
+            return '📉';
+        }
+        return '';
+    }
+
+    /**
+     * Server-ийн odds тэмдэг + odds утга авах
+     */
+    private function getServerTag(string $server, array $ctx): string
+    {
+        $tag = ($server === $ctx['player1']) ? $ctx['p1Tag'] : $ctx['p2Tag'];
+        $odds = ($server === $ctx['player1']) ? $ctx['p1Odds'] : $ctx['p2Odds'];
+        if (!empty($tag) && $odds !== null) {
+            return " {$tag} ({$odds})";
+        }
+        return '';
+    }
+
+    /**
+     * Мессежний header: тэмцээний нэр
+     */
+    private function buildMatchHeader(array $ctx): string
+    {
+        $header = '';
+        if (!empty($ctx['tournament'])) {
+            $header .= "🏆 {$ctx['tournament']}\n";
+        }
+        return $header;
     }
 
     /**
@@ -67,9 +131,7 @@ class RuleEngine
         string $serveKey,
         string $server,
         string $matchId,
-        string $player1,
-        string $player2,
-        string $scoreText,
+        array $ctx,
         int $gameIndex
     ): void {
         if (empty($gameResult) || empty($serveKey)) {
@@ -98,11 +160,8 @@ class RuleEngine
         $serverPts   = ($serveKey === 'First Player') ? $firstPts : $secondPts;
         $returnerPts = ($serveKey === 'First Player') ? $secondPts : $firstPts;
 
-        // Server эхний 2 оноогоо алдсан эсэх:
-        // Server оноо = 0, Returner оноо >= 30 (0-30 эсвэл 0-40)
         $serverLostFirst2 = ($serverPts === 0 && $returnerPts >= 30);
 
-        // Debug log
         echo "  [SERVE030] {$server}: gameResult={$gameResult} serveKey={$serveKey} serverPts={$serverPts} returnerPts={$returnerPts} lost2=" . ($serverLostFirst2 ? 'YES' : 'no') . PHP_EOL;
 
         if (!$serverLostFirst2) {
@@ -116,11 +175,13 @@ class RuleEngine
             return;
         }
 
-        $message = "🟡 SERVE 0-30\n"
-            . "Match: {$player1} vs {$player2}\n"
-            . "Тоглогч: {$server}\n"
+        $serverTag = $this->getServerTag($server, $ctx);
+        $message = $this->buildMatchHeader($ctx)
+            . "🟡 SERVE 0-30\n"
+            . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
+            . "Тоглогч: {$server}{$serverTag}\n"
             . "Serve дээрээ эхний 2 оноогоо алдлаа ({$gameResult})\n"
-            . "Score: {$scoreText}";
+            . "Score: {$ctx['scoreText']}";
 
         $this->saveAndSend($matchId, $server, $ruleKey, $message, $alertKey);
     }
@@ -196,9 +257,7 @@ class RuleEngine
         string $server,
         string $gameResult,
         string $gameScore,
-        string $player1,
-        string $player2,
-        string $scoreText,
+        array $ctx,
         int $gameIndex
     ): void {
         if (empty($matchId) || empty($gameResult) || empty($serveKey)) {
@@ -245,17 +304,19 @@ class RuleEngine
                 echo "  [STATE] Game changed for match {$matchId}: minSrv={$minSrvPts} maxRet={$maxRetPts}" . PHP_EOL;
 
                 if ($minSrvPts === 0 && $maxRetPts >= 30 && !empty($prevServeKey)) {
-                    $prevServerName = ($prevServeKey === 'First Player') ? $player1 : $player2;
+                    $prevServerName = ($prevServeKey === 'First Player') ? $ctx['player1'] : $ctx['player2'];
                     $ruleKey = 'SERVE_0_30';
                     $prevGameIdx = max(0, $gameIndex - 1);
                     $alertKey = "{$matchId}_{$prevServerName}_{$ruleKey}_g{$prevGameIdx}";
 
                     if (!$this->isDuplicate($matchId, $prevServerName, $ruleKey, $alertKey)) {
-                        $message = "🟡 SERVE 0-30\n"
-                            . "Match: {$player1} vs {$player2}\n"
-                            . "Тоглогч: {$prevServerName}\n"
+                        $prevTag = $this->getServerTag($prevServerName, $ctx);
+                        $message = $this->buildMatchHeader($ctx)
+                            . "🟡 SERVE 0-30\n"
+                            . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
+                            . "Тоглогч: {$prevServerName}{$prevTag}\n"
                             . "Serve дээрээ эхний 2 оноогоо алдлаа\n"
-                            . "Score: {$scoreText}";
+                            . "Score: {$ctx['scoreText']}";
 
                         echo "  [STATE] → Alert fired for {$prevServerName}!" . PHP_EOL;
                         $this->saveAndSend($matchId, $prevServerName, $ruleKey, $message, $alertKey);
@@ -309,9 +370,7 @@ class RuleEngine
     private function checkServe030FromHistory(
         array $gameAnalysis,
         string $matchId,
-        string $player1,
-        string $player2,
-        string $scoreText
+        array $ctx
     ): void {
         foreach ($gameAnalysis as $game) {
             $served = $game['served'];
@@ -319,7 +378,7 @@ class RuleEngine
                 continue;
             }
 
-            $playerName = ($served === 'First Player') ? $player1 : $player2;
+            $playerName = ($served === 'First Player') ? $ctx['player1'] : $ctx['player2'];
             $ruleKey = 'SERVE_0_30';
             $gameIdx = $game['index'];
             $alertKey = "{$matchId}_{$playerName}_{$ruleKey}_g{$gameIdx}";
@@ -328,11 +387,13 @@ class RuleEngine
                 continue;
             }
 
-            $message = "🟡 SERVE 0-30\n"
-                . "Match: {$player1} vs {$player2}\n"
-                . "Тоглогч: {$playerName}\n"
+            $playerTag = $this->getServerTag($playerName, $ctx);
+            $message = $this->buildMatchHeader($ctx)
+                . "🟡 SERVE 0-30\n"
+                . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
+                . "Тоглогч: {$playerName}{$playerTag}\n"
                 . "Serve дээрээ эхний 2 оноогоо алдлаа (game #{$gameIdx})\n"
-                . "Score: {$scoreText}";
+                . "Score: {$ctx['scoreText']}";
 
             $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
         }
@@ -344,9 +405,7 @@ class RuleEngine
     private function checkConsecFirstPointLost(
         array $gameAnalysis,
         string $matchId,
-        string $player1,
-        string $player2,
-        string $scoreText
+        array $ctx
     ): void {
         $streaks = ['First Player' => 0, 'Second Player' => 0];
 
@@ -364,7 +423,7 @@ class RuleEngine
 
         foreach ($streaks as $playerKey => $streak) {
             if ($streak >= 2) {
-                $playerName = $playerKey === 'First Player' ? $player1 : $player2;
+                $playerName = $playerKey === 'First Player' ? $ctx['player1'] : $ctx['player2'];
                 $ruleKey = 'CONSEC_FIRST_POINT_LOST';
                 $alertKey = "{$matchId}_{$playerName}_{$ruleKey}_{$streak}";
 
@@ -372,11 +431,13 @@ class RuleEngine
                     continue;
                 }
 
-                $message = "🔴 PATTERN: Эхний оноо алдсан\n"
-                    . "Match: {$player1} vs {$player2}\n"
-                    . "Тоглогч: {$playerName}\n"
+                $playerTag = $this->getServerTag($playerName, $ctx);
+                $message = $this->buildMatchHeader($ctx)
+                    . "🔴 PATTERN: Эхний оноо алдсан\n"
+                    . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
+                    . "Тоглогч: {$playerName}{$playerTag}\n"
                     . "Дараалсан {$streak} serve game эхний оноогоо алдлаа\n"
-                    . "Score: {$scoreText}";
+                    . "Score: {$ctx['scoreText']}";
 
                 $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
             }
@@ -393,9 +454,7 @@ class RuleEngine
     private function checkConsecServe030Live(
         string $matchId,
         string $server,
-        string $player1,
-        string $player2,
-        string $scoreText
+        array $ctx
     ): void {
         try {
             $stmt = $this->pdo->prepare("
@@ -418,13 +477,15 @@ class RuleEngine
                 return;
             }
 
-            $message = "🔥🔥🔥 ДАВХАР PATTERN 🔥🔥🔥\n"
+            $serverTag = $this->getServerTag($server, $ctx);
+            $message = $this->buildMatchHeader($ctx)
+                . "🔥🔥🔥 ДАВХАР PATTERN 🔥🔥🔥\n"
                 . "━━━━━━━━━━━━━━━━━━━━\n"
                 . "⚠️ Дараалсан {$count} serve game 0-30!\n"
                 . "━━━━━━━━━━━━━━━━━━━━\n"
-                . "Match: {$player1} vs {$player2}\n"
-                . "Тоглогч: {$server}\n"
-                . "Score: {$scoreText}\n"
+                . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
+                . "Тоглогч: {$server}{$serverTag}\n"
+                . "Score: {$ctx['scoreText']}\n"
                 . "━━━━━━━━━━━━━━━━━━━━";
 
             $this->saveAndSend($matchId, $server, $ruleKey, $message, $alertKey);
