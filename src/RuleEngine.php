@@ -34,22 +34,22 @@ class RuleEngine
         // Арга 1: event_game_result-аас ШУУД шалгана (real-time)
         $this->checkServe030Live($gameResult, $serveKey, $server, $matchId, $player1, $player2, $scoreText, $gameIndex);
 
-        // Арга 3: Өмнөх game-ийн score-г санаж шалгах (pointbypoint байхгүй үед)
+        // Арга 2: Өмнөх game-ийн score-г санаж шалгах (pointbypoint байхгүй үед)
         $gameScore = $match['score_text'] ?? '';
         $this->checkServe030ByStateChange($matchId, $serveKey, $server, $gameResult, $gameScore, $player1, $player2, $scoreText, $gameIndex);
 
         if (!empty($pointbypoint)) {
             $gameAnalysis = $this->analyzeGames($pointbypoint);
 
-            // Pattern 2 Арга 2: pointbypoint-аас шалгана (game дууссаны дараа ч барьдаг)
+            // Pattern 2 Арга 3: pointbypoint-аас шалгана (game дууссаны дараа ч барьдаг)
             $this->checkServe030FromHistory($gameAnalysis, $matchId, $player1, $player2, $scoreText);
 
             // Pattern 1: Дараалсан 2+ game эхний оноогоо алдсан
             $this->checkConsecFirstPointLost($gameAnalysis, $matchId, $player1, $player2, $scoreText);
-
-            // Pattern 3: Дараалсан 2 serve game 0-30 болсон (⚠️ онцлог alert)
-            $this->checkConsecServe030($gameAnalysis, $matchId, $player1, $player2, $scoreText);
         }
+
+        // Pattern 3: Дараалсан 2 serve game эхний 2 оноогоо алдсан (DB-ээс шалгана)
+        $this->checkConsecServe030Live($matchId, $server, $player1, $player2, $scoreText);
     }
 
     /**
@@ -385,49 +385,51 @@ class RuleEngine
 
     /**
      * Pattern 3: CONSEC_SERVE_0_30
+     *
+     * Тоглогч 2 serve game дараалж эхний 2 оноогоо алдсан (0-30 болсон).
+     * DB дээрх SERVE_0_30 alert-уудыг тоолж, нэг тоглогчид 2+ байвал fire хийнэ.
+     * Pointbypoint байхгүй, live detect-ээр баригдсан ч бүгд тооцогдоно.
      */
-    private function checkConsecServe030(
-        array $gameAnalysis,
+    private function checkConsecServe030Live(
         string $matchId,
+        string $server,
         string $player1,
         string $player2,
         string $scoreText
     ): void {
-        $streaks = ['First Player' => 0, 'Second Player' => 0];
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT COUNT(*) FROM alerts
+                WHERE match_id = :match
+                AND player_name = :player
+                AND rule_key = 'SERVE_0_30'
+            ");
+            $stmt->execute([':match' => $matchId, ':player' => $server]);
+            $count = (int) $stmt->fetchColumn();
 
-        foreach ($gameAnalysis as $game) {
-            $served = $game['served'];
-            if (empty($served)) {
-                continue;
+            if ($count < 2) {
+                return;
             }
-            if ($game['reached_0_30']) {
-                $streaks[$served]++;
-            } else {
-                $streaks[$served] = 0;
+
+            $ruleKey = 'CONSEC_SERVE_0_30';
+            $alertKey = "{$matchId}_{$server}_{$ruleKey}_{$count}";
+
+            if ($this->isDuplicate($matchId, $server, $ruleKey, $alertKey)) {
+                return;
             }
-        }
 
-        foreach ($streaks as $playerKey => $streak) {
-            if ($streak >= 2) {
-                $playerName = $playerKey === 'First Player' ? $player1 : $player2;
-                $ruleKey = 'CONSEC_SERVE_0_30';
-                $alertKey = "{$matchId}_{$playerName}_{$ruleKey}_{$streak}";
+            $message = "🔥🔥🔥 ДАВХАР PATTERN 🔥🔥🔥\n"
+                . "━━━━━━━━━━━━━━━━━━━━\n"
+                . "⚠️ Дараалсан {$count} serve game 0-30!\n"
+                . "━━━━━━━━━━━━━━━━━━━━\n"
+                . "Match: {$player1} vs {$player2}\n"
+                . "Тоглогч: {$server}\n"
+                . "Score: {$scoreText}\n"
+                . "━━━━━━━━━━━━━━━━━━━━";
 
-                if ($this->isDuplicate($matchId, $playerName, $ruleKey, $alertKey)) {
-                    continue;
-                }
-
-                $message = "🔥🔥🔥 ДАВХАР PATTERN 🔥🔥🔥\n"
-                    . "━━━━━━━━━━━━━━━━━━━━\n"
-                    . "⚠️ Дараалсан {$streak} serve game 0-30!\n"
-                    . "━━━━━━━━━━━━━━━━━━━━\n"
-                    . "Match: {$player1} vs {$player2}\n"
-                    . "Тоглогч: {$playerName}\n"
-                    . "Score: {$scoreText}\n"
-                    . "━━━━━━━━━━━━━━━━━━━━";
-
-                $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
-            }
+            $this->saveAndSend($matchId, $server, $ruleKey, $message, $alertKey);
+        } catch (\PDOException $e) {
+            error_log('RuleEngine: consec serve 030 check failed: ' . $e->getMessage());
         }
     }
 
