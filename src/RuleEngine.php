@@ -51,7 +51,10 @@ class RuleEngine
             'scoreText'  => $scoreText,
         ];
 
-        // Pattern 2: Serve дээрээ эхний 2 оноогоо алдсан
+        // === Pattern 1: Эхний оноогоо алдсан detect (live) ===
+        $this->checkFirstPointLostLive($gameResult, $serveKey, $server, $matchId, $ctx, $gameIndex);
+
+        // === Pattern 2: Serve дээрээ эхний 2 оноогоо алдсан ===
         // Арга 1: event_game_result-аас ШУУД шалгана (real-time)
         $this->checkServe030Live($gameResult, $serveKey, $server, $matchId, $ctx, $gameIndex);
 
@@ -65,11 +68,14 @@ class RuleEngine
             // Pattern 2 Арга 3: pointbypoint-аас шалгана (game дууссаны дараа ч барьдаг)
             $this->checkServe030FromHistory($gameAnalysis, $matchId, $ctx);
 
-            // Pattern 1: Дараалсан 2+ game эхний оноогоо алдсан
-            $this->checkConsecFirstPointLost($gameAnalysis, $matchId, $ctx);
+            // Pattern 1 backup: pointbypoint-аас эхний оноо алдсан detect
+            $this->checkFirstPointLostFromHistory($gameAnalysis, $matchId, $ctx);
         }
 
-        // Pattern 3: Дараалсан 2 serve game эхний 2 оноогоо алдсан (DB-ээс шалгана)
+        // === Pattern 1: Дараалсан 2+ serve game эхний оноогоо алдсан (DB-ээс) ===
+        $this->checkConsecFirstPointLostFromDB($matchId, $server, $ctx);
+
+        // === Pattern 3: Дараалсан 2 serve game 0-30 болсон (DB-ээс) ===
         $this->checkConsecServe030Live($matchId, $server, $ctx);
     }
 
@@ -114,6 +120,207 @@ class RuleEngine
             $header .= "🏆 {$ctx['tournament']}\n";
         }
         return $header;
+    }
+
+    /**
+     * Pattern 1: FIRST_POINT_LOST — LIVE detect
+     *
+     * Server эхний оноогоо алдсан эсэхийг game_result-аас шалгана.
+     * 0-15 бол эхний оноо алдсан. DB-д хадгална (мессеж илгээхгүй,
+     * зөвхөн checkConsecFirstPointLostFromDB-д ашиглагдана).
+     */
+    private function checkFirstPointLostLive(
+        string $gameResult,
+        string $serveKey,
+        string $server,
+        string $matchId,
+        array $ctx,
+        int $gameIndex
+    ): void {
+        if (empty($gameResult) || empty($serveKey)) {
+            return;
+        }
+
+        $parts = array_map('trim', explode('-', $gameResult));
+        if (count($parts) !== 2) {
+            return;
+        }
+
+        $firstPts  = $this->parsePoints($parts[0]);
+        $secondPts = $this->parsePoints($parts[1]);
+
+        if ($firstPts === -1 || $secondPts === -1) {
+            return;
+        }
+
+        // Server эхний оноогоо алдсан: server=0, returner=15 (эсвэл 12 секундын
+        // завсарт 0-30, 0-40 болсон бол server эхний оноогоо алдсан)
+        $serverPts   = ($serveKey === 'First Player') ? $firstPts : $secondPts;
+        $returnerPts = ($serveKey === 'First Player') ? $secondPts : $firstPts;
+
+        // Server 0 оноотой, returner >= 15 бол эхний оноогоо алдсан
+        $serverLostFirst = ($serverPts === 0 && $returnerPts >= 15);
+
+        if (!$serverLostFirst) {
+            return;
+        }
+
+        // DB-д хадгална (мессеж илгээхгүй - зөвхөн дараалсан эсэхийг шалгахад хэрэглэнэ)
+        $ruleKey = 'FIRST_POINT_LOST';
+        $alertKey = "{$matchId}_{$server}_{$ruleKey}_g{$gameIndex}";
+
+        if ($this->isDuplicate($matchId, $server, $ruleKey, $alertKey)) {
+            return;
+        }
+
+        // Silent save — мессеж илгээхгүй, зөвхөн DB-д бичнэ
+        try {
+            $stmt = $this->pdo->prepare("
+                INSERT OR IGNORE INTO alerts
+                (match_id, player_name, rule_key, message, score_text, created_at)
+                VALUES (:match, :player, :rule, :msg, :key, :time)
+            ");
+            $stmt->execute([
+                ':match'  => $matchId,
+                ':player' => $server,
+                ':rule'   => $ruleKey,
+                ':msg'    => 'first_point_lost_detected',
+                ':key'    => $alertKey,
+                ':time'   => date('c'),
+            ]);
+            echo "  [FPL] {$server}: first point lost detected (game {$gameIndex})" . PHP_EOL;
+        } catch (\PDOException $e) {
+            error_log('RuleEngine: first point lost save failed: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Pattern 1 backup: pointbypoint-аас эхний оноо алдсан detect
+     * Live-аар 12 секундын завсарт алдагдсан тохиолдолд pointbypoint-аас барьна.
+     */
+    private function checkFirstPointLostFromHistory(
+        array $gameAnalysis,
+        string $matchId,
+        array $ctx
+    ): void {
+        foreach ($gameAnalysis as $game) {
+            $served = $game['served'];
+            if (empty($served) || !$game['server_lost_first']) {
+                continue;
+            }
+
+            $playerName = ($served === 'First Player') ? $ctx['player1'] : $ctx['player2'];
+            $ruleKey = 'FIRST_POINT_LOST';
+            $gameIdx = $game['index'];
+            $alertKey = "{$matchId}_{$playerName}_{$ruleKey}_g{$gameIdx}";
+
+            if ($this->isDuplicate($matchId, $playerName, $ruleKey, $alertKey)) {
+                continue;
+            }
+
+            // Silent save
+            try {
+                $stmt = $this->pdo->prepare("
+                    INSERT OR IGNORE INTO alerts
+                    (match_id, player_name, rule_key, message, score_text, created_at)
+                    VALUES (:match, :player, :rule, :msg, :key, :time)
+                ");
+                $stmt->execute([
+                    ':match'  => $matchId,
+                    ':player' => $playerName,
+                    ':rule'   => $ruleKey,
+                    ':msg'    => 'first_point_lost_detected',
+                    ':key'    => $alertKey,
+                    ':time'   => date('c'),
+                ]);
+            } catch (\PDOException $e) {
+                error_log('RuleEngine: first point lost history save failed: ' . $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Pattern 1: CONSEC_FIRST_POINT_LOST — DB-ээс дараалсан эсэхийг шалгах
+     *
+     * Pattern 3-тай яг адилхан логик: DB дээрх FIRST_POINT_LOST alert-уудын
+     * game index-ийг авч, зөрүү <= 3 бол дараалсан гэж тооцно.
+     */
+    private function checkConsecFirstPointLostFromDB(
+        string $matchId,
+        string $server,
+        array $ctx
+    ): void {
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT score_text FROM alerts
+                WHERE match_id = :match
+                AND player_name = :player
+                AND rule_key = 'FIRST_POINT_LOST'
+                ORDER BY created_at ASC
+            ");
+            $stmt->execute([':match' => $matchId, ':player' => $server]);
+            $rows = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+            if (count($rows) < 2) {
+                return;
+            }
+
+            // Game index задлах
+            $gameIndices = [];
+            foreach ($rows as $alertKey) {
+                if (preg_match('/_g(\d+)$/', $alertKey, $m)) {
+                    $gameIndices[] = (int) $m[1];
+                }
+            }
+
+            if (count($gameIndices) < 2) {
+                return;
+            }
+
+            sort($gameIndices);
+
+            // Дараалсан serve game-ийн streak тоолох
+            $curStreak = 1;
+            for ($i = 1; $i < count($gameIndices); $i++) {
+                $gap = $gameIndices[$i] - $gameIndices[$i - 1];
+                if ($gap <= 3) {
+                    $curStreak++;
+                } else {
+                    $curStreak = 1;
+                }
+            }
+
+            // Сүүлийн 2 alert дараалсан эсэх
+            $lastGap = $gameIndices[count($gameIndices) - 1] - $gameIndices[count($gameIndices) - 2];
+            $isLastConsecutive = ($lastGap <= 3);
+
+            echo "  [CONSEC_FPL] {$server}: indices=" . implode(',', $gameIndices)
+                . " streak={$curStreak} lastGap={$lastGap}" . PHP_EOL;
+
+            if (!$isLastConsecutive || $curStreak < 2) {
+                return;
+            }
+
+            $ruleKey = 'CONSEC_FIRST_POINT_LOST';
+            $lastIdx = $gameIndices[count($gameIndices) - 1];
+            $alertKey = "{$matchId}_{$server}_{$ruleKey}_g{$lastIdx}_s{$curStreak}";
+
+            if ($this->isDuplicate($matchId, $server, $ruleKey, $alertKey)) {
+                return;
+            }
+
+            $serverTag = $this->getServerTag($server, $ctx);
+            $message = $this->buildMatchHeader($ctx)
+                . "🔴 PATTERN: Эхний оноо алдсан\n"
+                . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
+                . "Тоглогч: {$server}{$serverTag}\n"
+                . "Дараалсан {$curStreak} serve game эхний оноогоо алдлаа\n"
+                . "Score: {$ctx['scoreText']}";
+
+            $this->saveAndSend($matchId, $server, $ruleKey, $message, $alertKey);
+        } catch (\PDOException $e) {
+            error_log('RuleEngine: consec first point lost check failed: ' . $e->getMessage());
+        }
     }
 
     /**
@@ -396,51 +603,6 @@ class RuleEngine
                 . "Score: {$ctx['scoreText']}";
 
             $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
-        }
-    }
-
-    /**
-     * Pattern 1: CONSEC_FIRST_POINT_LOST
-     */
-    private function checkConsecFirstPointLost(
-        array $gameAnalysis,
-        string $matchId,
-        array $ctx
-    ): void {
-        $streaks = ['First Player' => 0, 'Second Player' => 0];
-
-        foreach ($gameAnalysis as $game) {
-            $served = $game['served'];
-            if (empty($served)) {
-                continue;
-            }
-            if ($game['server_lost_first']) {
-                $streaks[$served]++;
-            } else {
-                $streaks[$served] = 0;
-            }
-        }
-
-        foreach ($streaks as $playerKey => $streak) {
-            if ($streak >= 2) {
-                $playerName = $playerKey === 'First Player' ? $ctx['player1'] : $ctx['player2'];
-                $ruleKey = 'CONSEC_FIRST_POINT_LOST';
-                $alertKey = "{$matchId}_{$playerName}_{$ruleKey}_{$streak}";
-
-                if ($this->isDuplicate($matchId, $playerName, $ruleKey, $alertKey)) {
-                    continue;
-                }
-
-                $playerTag = $this->getServerTag($playerName, $ctx);
-                $message = $this->buildMatchHeader($ctx)
-                    . "🔴 PATTERN: Эхний оноо алдсан\n"
-                    . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
-                    . "Тоглогч: {$playerName}{$playerTag}\n"
-                    . "Дараалсан {$streak} serve game эхний оноогоо алдлаа\n"
-                    . "Score: {$ctx['scoreText']}";
-
-                $this->saveAndSend($matchId, $playerName, $ruleKey, $message, $alertKey);
-            }
         }
     }
 
