@@ -447,9 +447,13 @@ class RuleEngine
     /**
      * Pattern 3: CONSEC_SERVE_0_30
      *
-     * Тоглогч 2 serve game дараалж эхний 2 оноогоо алдсан (0-30 болсон).
-     * DB дээрх SERVE_0_30 alert-уудыг тоолж, нэг тоглогчид 2+ байвал fire хийнэ.
-     * Pointbypoint байхгүй, live detect-ээр баригдсан ч бүгд тооцогдоно.
+     * Тоглогч 2 serve game ДАРААЛЖ эхний 2 оноогоо алдсан (0-30 болсон).
+     * DB-ээс SERVE_0_30 alert-уудын game index-ийг авч, дараалсан serve
+     * game-ууд дээр байгаа эсэхийг шалгана.
+     *
+     * Теннист нэг тоглогчийн serve game-ууд хооронд нөгөө тоглогчийн
+     * serve game орох тул game index нь ихэвчлэн 2-оор зөрнө.
+     * Tiebreak зэрэг тохиолдлыг бодвол зөрүү <= 3 бол "дараалсан" гэж тооцно.
      */
     private function checkConsecServe030Live(
         string $matchId,
@@ -457,21 +461,65 @@ class RuleEngine
         array $ctx
     ): void {
         try {
+            // SERVE_0_30 alert-уудын game index-ийг авах
             $stmt = $this->pdo->prepare("
-                SELECT COUNT(*) FROM alerts
+                SELECT score_text FROM alerts
                 WHERE match_id = :match
                 AND player_name = :player
                 AND rule_key = 'SERVE_0_30'
+                ORDER BY created_at ASC
             ");
             $stmt->execute([':match' => $matchId, ':player' => $server]);
-            $count = (int) $stmt->fetchColumn();
+            $rows = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
-            if ($count < 2) {
+            if (count($rows) < 2) {
+                return;
+            }
+
+            // alertKey format: "{matchId}_{player}_SERVE_0_30_g{gameIndex}"
+            // Game index-ийг бүгдээс нь задлах
+            $gameIndices = [];
+            foreach ($rows as $alertKey) {
+                if (preg_match('/_g(\d+)$/', $alertKey, $m)) {
+                    $gameIndices[] = (int) $m[1];
+                }
+            }
+
+            if (count($gameIndices) < 2) {
+                return;
+            }
+
+            sort($gameIndices);
+
+            // Дараалсан serve game-ийн streak тоолох
+            // Зөрүү <= 3 бол дараалсан (тоглогч serve → нөгөө serve → тоглогч serve = 2 зөрүү)
+            $maxStreak = 1;
+            $curStreak = 1;
+            for ($i = 1; $i < count($gameIndices); $i++) {
+                $gap = $gameIndices[$i] - $gameIndices[$i - 1];
+                if ($gap <= 3) {
+                    $curStreak++;
+                    $maxStreak = max($maxStreak, $curStreak);
+                } else {
+                    $curStreak = 1;
+                }
+            }
+
+            // Сүүлийн 2 alert дараалсан эсэх (хамгийн сүүлийн streak)
+            $lastGap = $gameIndices[count($gameIndices) - 1] - $gameIndices[count($gameIndices) - 2];
+            $isLastConsecutive = ($lastGap <= 3);
+
+            echo "  [CONSEC030] {$server}: gameIndices=" . implode(',', $gameIndices)
+                . " maxStreak={$maxStreak} lastGap={$lastGap}" . PHP_EOL;
+
+            if (!$isLastConsecutive || $maxStreak < 2) {
                 return;
             }
 
             $ruleKey = 'CONSEC_SERVE_0_30';
-            $alertKey = "{$matchId}_{$server}_{$ruleKey}_{$count}";
+            // Сүүлийн дараалсан streak-ийн game index-үүдээр alertKey үүсгэнэ
+            $lastIdx = $gameIndices[count($gameIndices) - 1];
+            $alertKey = "{$matchId}_{$server}_{$ruleKey}_g{$lastIdx}_s{$curStreak}";
 
             if ($this->isDuplicate($matchId, $server, $ruleKey, $alertKey)) {
                 return;
@@ -481,7 +529,7 @@ class RuleEngine
             $message = $this->buildMatchHeader($ctx)
                 . "🔥🔥🔥 ДАВХАР PATTERN 🔥🔥🔥\n"
                 . "━━━━━━━━━━━━━━━━━━━━\n"
-                . "⚠️ Дараалсан {$count} serve game 0-30!\n"
+                . "⚠️ Дараалсан {$curStreak} serve game 0-30!\n"
                 . "━━━━━━━━━━━━━━━━━━━━\n"
                 . "Match: {$ctx['player1']} vs {$ctx['player2']}\n"
                 . "Тоглогч: {$server}{$serverTag}\n"
