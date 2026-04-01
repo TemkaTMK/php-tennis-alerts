@@ -73,10 +73,14 @@ class RuleEngine
         }
 
         // === Pattern 1: Дараалсан 2+ serve game эхний оноогоо алдсан (DB-ээс) ===
-        $this->checkConsecFirstPointLostFromDB($matchId, $server, $ctx);
+        // Хоёр тоглогчийг хоёуланг шалгана (serve ээлжлэлтэй тул)
+        $this->checkConsecFirstPointLostFromDB($matchId, $player1, $ctx);
+        $this->checkConsecFirstPointLostFromDB($matchId, $player2, $ctx);
 
         // === Pattern 3: Дараалсан 2 serve game 0-30 болсон (DB-ээс) ===
-        $this->checkConsecServe030Live($matchId, $server, $ctx);
+        // Хоёр тоглогчийг хоёуланг шалгана
+        $this->checkConsecServe030Live($matchId, $player1, $ctx);
+        $this->checkConsecServe030Live($matchId, $player2, $ctx);
     }
 
     /**
@@ -510,6 +514,36 @@ class RuleEngine
 
                 echo "  [STATE] Game changed for match {$matchId}: minSrv={$minSrvPts} maxRet={$maxRetPts}" . PHP_EOL;
 
+                // Pattern 1: Өмнөх game-д server эхний оноогоо алдсан эсэхийг DB-д бичих
+                if ($minSrvPts === 0 && !empty($prevServeKey)) {
+                    $prevServerName = ($prevServeKey === 'First Player') ? $ctx['player1'] : $ctx['player2'];
+                    $fplRuleKey = 'FIRST_POINT_LOST';
+                    $prevGameIdx = max(0, $gameIndex - 1);
+                    $fplAlertKey = "{$matchId}_{$prevServerName}_{$fplRuleKey}_g{$prevGameIdx}";
+
+                    if (!$this->isDuplicate($matchId, $prevServerName, $fplRuleKey, $fplAlertKey)) {
+                        try {
+                            $fplStmt = $this->pdo->prepare("
+                                INSERT OR IGNORE INTO alerts
+                                (match_id, player_name, rule_key, message, score_text, created_at)
+                                VALUES (:match, :player, :rule, :msg, :key, :time)
+                            ");
+                            $fplStmt->execute([
+                                ':match'  => $matchId,
+                                ':player' => $prevServerName,
+                                ':rule'   => $fplRuleKey,
+                                ':msg'    => 'first_point_lost_detected',
+                                ':key'    => $fplAlertKey,
+                                ':time'   => date('c'),
+                            ]);
+                            echo "  [STATE/FPL] {$prevServerName}: first point lost saved (game {$prevGameIdx})" . PHP_EOL;
+                        } catch (\PDOException $e) {
+                            error_log('RuleEngine: state FPL save failed: ' . $e->getMessage());
+                        }
+                    }
+                }
+
+                // Pattern 2: Өмнөх game-д server 0-30+ болсон эсэхийг шалгах
                 if ($minSrvPts === 0 && $maxRetPts >= 30 && !empty($prevServeKey)) {
                     $prevServerName = ($prevServeKey === 'First Player') ? $ctx['player1'] : $ctx['player2'];
                     $ruleKey = 'SERVE_0_30';
