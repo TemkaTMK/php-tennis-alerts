@@ -32,6 +32,12 @@ class RuleEngine
 
         // Тэмцээн + odds мэдээлэл
         $tournament  = $match['tournament'] ?? '';
+
+        // === M15 / M25 тэмцээнүүдийг skip хийнэ ===
+        if ($this->isM15M25Tournament($tournament)) {
+            return;
+        }
+
         $p1Odds      = $match['player1_odds'] ?? null;
         $p2Odds      = $match['player2_odds'] ?? null;
 
@@ -76,10 +82,15 @@ class RuleEngine
         // $this->checkConsecFirstPointLostFromDB($matchId, $player1, $ctx);
         // $this->checkConsecFirstPointLostFromDB($matchId, $player2, $ctx);
 
-        // === Pattern 3: Дараалсан 2 serve game 0-30 болсон (DB-ээс) ===
-        // Хоёр тоглогчийг хоёуланг шалгана
-        $this->checkConsecServe030Live($matchId, $player1, $ctx);
-        $this->checkConsecServe030Live($matchId, $player2, $ctx);
+        // === Pattern 3: ИДЭВХГҮЙ болгосон ===
+        // $this->checkConsecServe030Live($matchId, $player1, $ctx);
+        // $this->checkConsecServe030Live($matchId, $player2, $ctx);
+    }
+
+    private function isM15M25Tournament(string $name): bool
+    {
+        $n = strtoupper(trim($name));
+        return str_contains($n, 'M15') || str_contains($n, 'M25');
     }
 
     /**
@@ -480,7 +491,6 @@ class RuleEngine
                 echo "  [STATE] Game changed for match {$matchId}: minSrv={$minSrvPts} maxRet={$maxRetPts}" . PHP_EOL;
 
                 // Pattern 1 (STATE/FPL): ИДЭВХГҮЙ болгосон
-                // if ($minSrvPts === 0 && !empty($prevServeKey)) { ... }
 
                 // Pattern 2: Өмнөх game-д server 0-30+ болсон эсэхийг шалгах
                 if ($minSrvPts === 0 && $maxRetPts >= 30 && !empty($prevServeKey)) {
