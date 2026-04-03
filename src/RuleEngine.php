@@ -51,8 +51,8 @@ class RuleEngine
             'scoreText'  => $scoreText,
         ];
 
-        // === Pattern 1: Эхний оноогоо алдсан detect (live) ===
-        $this->checkFirstPointLostLive($gameResult, $serveKey, $server, $matchId, $ctx, $gameIndex);
+        // === Pattern 1: ИДЭВХГҮЙ болгосон ===
+        // $this->checkFirstPointLostLive($gameResult, $serveKey, $server, $matchId, $ctx, $gameIndex);
 
         // === Pattern 2: Serve дээрээ эхний 2 оноогоо алдсан ===
         // Арга 1: event_game_result-аас ШУУД шалгана (real-time)
@@ -68,14 +68,13 @@ class RuleEngine
             // Pattern 2 Арга 3: pointbypoint-аас шалгана (game дууссаны дараа ч барьдаг)
             $this->checkServe030FromHistory($gameAnalysis, $matchId, $ctx);
 
-            // Pattern 1 backup: pointbypoint-аас эхний оноо алдсан detect
-            $this->checkFirstPointLostFromHistory($gameAnalysis, $matchId, $ctx);
+            // Pattern 1 backup: ИДЭВХГҮЙ болгосон
+            // $this->checkFirstPointLostFromHistory($gameAnalysis, $matchId, $ctx);
         }
 
-        // === Pattern 1: Дараалсан 2+ serve game эхний оноогоо алдсан (DB-ээс) ===
-        // Хоёр тоглогчийг хоёуланг шалгана (serve ээлжлэлтэй тул)
-        $this->checkConsecFirstPointLostFromDB($matchId, $player1, $ctx);
-        $this->checkConsecFirstPointLostFromDB($matchId, $player2, $ctx);
+        // === Pattern 1: ИДЭВХГҮЙ болгосон ===
+        // $this->checkConsecFirstPointLostFromDB($matchId, $player1, $ctx);
+        // $this->checkConsecFirstPointLostFromDB($matchId, $player2, $ctx);
 
         // === Pattern 3: Дараалсан 2 serve game 0-30 болсон (DB-ээс) ===
         // Хоёр тоглогчийг хоёуланг шалгана
@@ -128,10 +127,7 @@ class RuleEngine
 
     /**
      * Pattern 1: FIRST_POINT_LOST — LIVE detect
-     *
-     * Server эхний оноогоо алдсан эсэхийг game_result-аас шалгана.
-     * 0-15 бол эхний оноо алдсан. DB-д хадгална (мессеж илгээхгүй,
-     * зөвхөн checkConsecFirstPointLostFromDB-д ашиглагдана).
+     * ⚠️  ИДЭВХГҮЙ: process()-оос дуудагдахгүй.
      */
     private function checkFirstPointLostLive(
         string $gameResult,
@@ -157,19 +153,15 @@ class RuleEngine
             return;
         }
 
-        // Server эхний оноогоо алдсан: server=0, returner=15 (эсвэл 12 секундын
-        // завсарт 0-30, 0-40 болсон бол server эхний оноогоо алдсан)
         $serverPts   = ($serveKey === 'First Player') ? $firstPts : $secondPts;
         $returnerPts = ($serveKey === 'First Player') ? $secondPts : $firstPts;
 
-        // Server 0 оноотой, returner >= 15 бол эхний оноогоо алдсан
         $serverLostFirst = ($serverPts === 0 && $returnerPts >= 15);
 
         if (!$serverLostFirst) {
             return;
         }
 
-        // DB-д хадгална (мессеж илгээхгүй - зөвхөн дараалсан эсэхийг шалгахад хэрэглэнэ)
         $ruleKey = 'FIRST_POINT_LOST';
         $alertKey = "{$matchId}_{$server}_{$ruleKey}_g{$gameIndex}";
 
@@ -177,7 +169,6 @@ class RuleEngine
             return;
         }
 
-        // Silent save — мессеж илгээхгүй, зөвхөн DB-д бичнэ
         try {
             $stmt = $this->pdo->prepare("
                 INSERT OR IGNORE INTO alerts
@@ -200,7 +191,7 @@ class RuleEngine
 
     /**
      * Pattern 1 backup: pointbypoint-аас эхний оноо алдсан detect
-     * Live-аар 12 секундын завсарт алдагдсан тохиолдолд pointbypoint-аас барьна.
+     * ⚠️  ИДЭВХГҮЙ: process()-оос дуудагдахгүй.
      */
     private function checkFirstPointLostFromHistory(
         array $gameAnalysis,
@@ -222,7 +213,6 @@ class RuleEngine
                 continue;
             }
 
-            // Silent save
             try {
                 $stmt = $this->pdo->prepare("
                     INSERT OR IGNORE INTO alerts
@@ -245,9 +235,7 @@ class RuleEngine
 
     /**
      * Pattern 1: CONSEC_FIRST_POINT_LOST — DB-ээс дараалсан эсэхийг шалгах
-     *
-     * Pattern 3-тай яг адилхан логик: DB дээрх FIRST_POINT_LOST alert-уудын
-     * game index-ийг авч, зөрүү <= 3 бол дараалсан гэж тооцно.
+     * ⚠️  ИДЭВХГҮЙ: process()-оос дуудагдахгүй.
      */
     private function checkConsecFirstPointLostFromDB(
         string $matchId,
@@ -269,7 +257,6 @@ class RuleEngine
                 return;
             }
 
-            // Game index задлах
             $gameIndices = [];
             foreach ($rows as $alertKey) {
                 if (preg_match('/_g(\d+)$/', $alertKey, $m)) {
@@ -283,7 +270,6 @@ class RuleEngine
 
             sort($gameIndices);
 
-            // Дараалсан serve game-ийн streak тоолох
             $curStreak = 1;
             for ($i = 1; $i < count($gameIndices); $i++) {
                 $gap = $gameIndices[$i] - $gameIndices[$i - 1];
@@ -294,7 +280,6 @@ class RuleEngine
                 }
             }
 
-            // Сүүлийн 2 alert дараалсан эсэх
             $lastGap = $gameIndices[count($gameIndices) - 1] - $gameIndices[count($gameIndices) - 2];
             $isLastConsecutive = ($lastGap <= 3);
 
@@ -329,13 +314,6 @@ class RuleEngine
 
     /**
      * Pattern 2: SERVE_0_30 — LIVE шалгалт
-     *
-     * Server эхний 2 оноогоо алдсан эсэхийг шалгана.
-     * 12 секундийн завсарт score өөрчлөгдөж болох тул
-     * 0-30, 0-40, 15-40 зэрэг server-ийн эхний 2 оноо алдагдсан
-     * бүх тохиолдлыг шалгана.
-     *
-     * game_result format: "First Player pts - Second Player pts" ҮРГЭЛЖ
      */
     private function checkServe030Live(
         string $gameResult,
@@ -354,7 +332,6 @@ class RuleEngine
             return;
         }
 
-        // Тоон утга руу хөрвүүлэх (A, AD гэх мэтийг тооцохгүй)
         $firstPts  = $this->parsePoints($parts[0]);
         $secondPts = $this->parsePoints($parts[1]);
 
@@ -362,12 +339,10 @@ class RuleEngine
             return;
         }
 
-        // Deuce/AD бол шалгахгүй (45 = Advantage)
         if ($firstPts >= 40 && $secondPts >= 40) {
             return;
         }
 
-        // Server-ийн оноо, returner-ийн оноог тодорхойлох
         $serverPts   = ($serveKey === 'First Player') ? $firstPts : $secondPts;
         $returnerPts = ($serveKey === 'First Player') ? $secondPts : $firstPts;
 
@@ -399,7 +374,6 @@ class RuleEngine
 
     /**
      * Point string-г тоо руу хөрвүүлэх.
-     * "0" → 0, "15" → 15, "30" → 30, "40" → 40, "A" → 45, бусад → -1
      */
     private function parsePoints(string $pts): int
     {
@@ -456,11 +430,7 @@ class RuleEngine
 
     /**
      * Pattern 2 (Арга 3): Game state change detect
-     *
-     * Poll бүрт game_result + game_score хадгална.
-     * Game шилжихэд (өмнөх score != одоогийн score) өмнөх game-ийн
-     * score-г шалгаж server 0-30+ байсан бол alert гаргана.
-     * pointbypoint байхгүй тоглолтуудад ч ажиллана.
+     * Pattern 1 (STATE/FPL) хэсэг ИДЭВХГҮЙ болгосон.
      */
     private function checkServe030ByStateChange(
         string $matchId,
@@ -475,7 +445,6 @@ class RuleEngine
             return;
         }
 
-        // Одоогийн server/returner оноо тооцоолох
         $parts = array_map('trim', explode('-', $gameResult));
         $curServerPts = 99;
         $curReturnerPts = 0;
@@ -489,7 +458,6 @@ class RuleEngine
         }
 
         try {
-            // Өмнөх state авах
             $stmt = $this->pdo->prepare("
                 SELECT serve_key, game_result, game_score, min_server_pts, max_returner_pts
                 FROM match_game_state WHERE match_id = :id
@@ -500,48 +468,19 @@ class RuleEngine
             $prevGameScore = $prev['game_score'] ?? '';
             $prevServeKey  = $prev['serve_key'] ?? '';
 
-            // Game шилжсэн эсэхийг detect:
-            // Score өөрчлөгдсөн байвал шинэ game
             $isNewGame = $prev && (
                 ($gameScore !== $prevGameScore) ||
                 ($gameResult === '0 - 0' && ($prev['game_result'] ?? '') !== '0 - 0' && !empty($prev['game_result']))
             );
 
             if ($isNewGame) {
-                // Өмнөх game-д server эхний 2 оноогоо алдсан эсэхийг шалгах
                 $minSrvPts = (int) ($prev['min_server_pts'] ?? 99);
                 $maxRetPts = (int) ($prev['max_returner_pts'] ?? 0);
 
                 echo "  [STATE] Game changed for match {$matchId}: minSrv={$minSrvPts} maxRet={$maxRetPts}" . PHP_EOL;
 
-                // Pattern 1: Өмнөх game-д server эхний оноогоо алдсан эсэхийг DB-д бичих
-                if ($minSrvPts === 0 && !empty($prevServeKey)) {
-                    $prevServerName = ($prevServeKey === 'First Player') ? $ctx['player1'] : $ctx['player2'];
-                    $fplRuleKey = 'FIRST_POINT_LOST';
-                    $prevGameIdx = max(0, $gameIndex - 1);
-                    $fplAlertKey = "{$matchId}_{$prevServerName}_{$fplRuleKey}_g{$prevGameIdx}";
-
-                    if (!$this->isDuplicate($matchId, $prevServerName, $fplRuleKey, $fplAlertKey)) {
-                        try {
-                            $fplStmt = $this->pdo->prepare("
-                                INSERT OR IGNORE INTO alerts
-                                (match_id, player_name, rule_key, message, score_text, created_at)
-                                VALUES (:match, :player, :rule, :msg, :key, :time)
-                            ");
-                            $fplStmt->execute([
-                                ':match'  => $matchId,
-                                ':player' => $prevServerName,
-                                ':rule'   => $fplRuleKey,
-                                ':msg'    => 'first_point_lost_detected',
-                                ':key'    => $fplAlertKey,
-                                ':time'   => date('c'),
-                            ]);
-                            echo "  [STATE/FPL] {$prevServerName}: first point lost saved (game {$prevGameIdx})" . PHP_EOL;
-                        } catch (\PDOException $e) {
-                            error_log('RuleEngine: state FPL save failed: ' . $e->getMessage());
-                        }
-                    }
-                }
+                // Pattern 1 (STATE/FPL): ИДЭВХГҮЙ болгосон
+                // if ($minSrvPts === 0 && !empty($prevServeKey)) { ... }
 
                 // Pattern 2: Өмнөх game-д server 0-30+ болсон эсэхийг шалгах
                 if ($minSrvPts === 0 && $maxRetPts >= 30 && !empty($prevServeKey)) {
@@ -564,7 +503,6 @@ class RuleEngine
                     }
                 }
 
-                // Шинэ game — min/max reset
                 $upsert = $this->pdo->prepare("
                     INSERT INTO match_game_state (match_id, serve_key, game_result, game_score, min_server_pts, max_returner_pts, updated_at)
                     VALUES (:id, :sk, :gr, :gs, :minS, :maxR, :t)
@@ -578,7 +516,6 @@ class RuleEngine
                     ':t' => date('c'),
                 ]);
             } else {
-                // Ижил game үргэлжилж байна — min/max update
                 $prevMin = $prev ? (int)($prev['min_server_pts'] ?? 99) : 99;
                 $prevMax = $prev ? (int)($prev['max_returner_pts'] ?? 0) : 0;
                 $newMin = min($prevMin, $curServerPts);
@@ -604,9 +541,6 @@ class RuleEngine
 
     /**
      * Pattern 2 (backup): pointbypoint түүхээс SERVE_0_30 шалгах
-     *
-     * Live game_result-аар 12 секундийн poll завсарт алдагдсан тохиолдолд
-     * pointbypoint data-аас game бүрт server 0-30 болсон эсэхийг шалгана.
      */
     private function checkServe030FromHistory(
         array $gameAnalysis,
@@ -642,14 +576,6 @@ class RuleEngine
 
     /**
      * Pattern 3: CONSEC_SERVE_0_30
-     *
-     * Тоглогч 2 serve game ДАРААЛЖ эхний 2 оноогоо алдсан (0-30 болсон).
-     * DB-ээс SERVE_0_30 alert-уудын game index-ийг авч, дараалсан serve
-     * game-ууд дээр байгаа эсэхийг шалгана.
-     *
-     * Теннист нэг тоглогчийн serve game-ууд хооронд нөгөө тоглогчийн
-     * serve game орох тул game index нь ихэвчлэн 2-оор зөрнө.
-     * Tiebreak зэрэг тохиолдлыг бодвол зөрүү <= 3 бол "дараалсан" гэж тооцно.
      */
     private function checkConsecServe030Live(
         string $matchId,
@@ -657,7 +583,6 @@ class RuleEngine
         array $ctx
     ): void {
         try {
-            // SERVE_0_30 alert-уудын game index-ийг авах
             $stmt = $this->pdo->prepare("
                 SELECT score_text FROM alerts
                 WHERE match_id = :match
@@ -672,8 +597,6 @@ class RuleEngine
                 return;
             }
 
-            // alertKey format: "{matchId}_{player}_SERVE_0_30_g{gameIndex}"
-            // Game index-ийг бүгдээс нь задлах
             $gameIndices = [];
             foreach ($rows as $alertKey) {
                 if (preg_match('/_g(\d+)$/', $alertKey, $m)) {
@@ -687,8 +610,6 @@ class RuleEngine
 
             sort($gameIndices);
 
-            // Дараалсан serve game-ийн streak тоолох
-            // Зөрүү <= 3 бол дараалсан (тоглогч serve → нөгөө serve → тоглогч serve = 2 зөрүү)
             $maxStreak = 1;
             $curStreak = 1;
             for ($i = 1; $i < count($gameIndices); $i++) {
@@ -701,7 +622,6 @@ class RuleEngine
                 }
             }
 
-            // Сүүлийн 2 alert дараалсан эсэх (хамгийн сүүлийн streak)
             $lastGap = $gameIndices[count($gameIndices) - 1] - $gameIndices[count($gameIndices) - 2];
             $isLastConsecutive = ($lastGap <= 3);
 
@@ -713,7 +633,6 @@ class RuleEngine
             }
 
             $ruleKey = 'CONSEC_SERVE_0_30';
-            // Сүүлийн дараалсан streak-ийн game index-үүдээр alertKey үүсгэнэ
             $lastIdx = $gameIndices[count($gameIndices) - 1];
             $alertKey = "{$matchId}_{$server}_{$ruleKey}_g{$lastIdx}_s{$curStreak}";
 
