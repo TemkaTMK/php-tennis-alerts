@@ -95,16 +95,7 @@ class RuleEngine
     {
         $n = strtoupper(trim($name));
 
-        if (!str_contains($n, 'ITF')) {
-            return false;
-        }
-
-        if (preg_match('/\b([MW])s?(d{2,3})\b/', $n, $m)) {
-            $level = (int) $m[2];
-            return $level < 100;
-        }
-
-        return false;
+        return str_contains($n, 'ITF');
     }
 
     private function buildOddsTag(?float $myOdds, ?float $opponentOdds): string
